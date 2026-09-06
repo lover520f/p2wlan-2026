@@ -96,27 +96,8 @@ fn copy_to_clipboard(value: &str) -> Result<(), Box<dyn Error>> {
 }
 
 fn tray_icon_image(running: bool) -> Result<Icon, Box<dyn Error>> {
-    let size = 32_u32;
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-    let primary = if running {
-        [0x16, 0xa3, 0x4a, 0xff]
-    } else {
-        [0x94, 0xa3, 0xb8, 0xff]
-    };
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as i32 - 16;
-            let dy = y as i32 - 16;
-            let distance_sq = dx * dx + dy * dy;
-            let pixel = if (7 * 7..=12 * 12).contains(&distance_sq) {
-                primary
-            } else if (12..=20).contains(&x) && (12..=20).contains(&y) {
-                [0x0f, 0x17, 0x2a, 0xff]
-            } else {
-                [0, 0, 0, 0]
-            };
-            rgba.extend_from_slice(&pixel);
-        }
-    }
-    Ok(Icon::from_rgba(rgba, size, size)?)
+    static TRAY_ICON_OFF: &[u8] = include_bytes!("../../assets/tray_icon_off.ico");
+    static TRAY_ICON_ON: &[u8] = include_bytes!("../../assets/tray_icon_on.ico");
+    let buffer = if running { TRAY_ICON_ON } else { TRAY_ICON_OFF };
+    Ok(Icon::from_buffer(buffer, None, None)?)
 }
