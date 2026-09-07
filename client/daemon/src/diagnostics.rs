@@ -25,10 +25,13 @@ use crate::tasks::{HealthState, TaskManager};
 use crate::traversal_history::TraversalHistoryDiagnostics;
 use crate::udp::{UdpSocketPoolMemberDiagnostics, UdpTransport};
 
+pub mod logging;
+
 include!("diagnostics/types.rs");
 include!("diagnostics/mtu.rs");
 include!("diagnostics/event_bus.rs");
 include!("diagnostics/speedtest.rs");
+include!("diagnostics/http_request.rs");
 include!("diagnostics/server.rs");
 include!("diagnostics/snapshot.rs");
 include!("diagnostics/response.rs");
