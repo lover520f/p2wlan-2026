@@ -14,15 +14,16 @@ import (
 // RegisterDevice handles POST /api/v1/devices.
 func (s *Server) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		PublicKey          string `json:"public_key"`
-		DeviceName         string `json:"device_name"`
-		Platform           string `json:"platform"`
-		NetworkID          string `json:"network_id"`
-		VirtualIP          string `json:"virtual_ip"`
-		AppVersion         string `json:"app_version"`
-		Ed25519PublicKey   string `json:"ed25519_public_key"`
-		ChallengeID        string `json:"challenge_id"`
-		ChallengeSignature string `json:"challenge_signature"`
+		PublicKey           string `json:"public_key"`
+		RoomProtocolVersion int    `json:"room_protocol_version"`
+		DeviceName          string `json:"device_name"`
+		Platform            string `json:"platform"`
+		NetworkID           string `json:"network_id"`
+		VirtualIP           string `json:"virtual_ip"`
+		AppVersion          string `json:"app_version"`
+		Ed25519PublicKey    string `json:"ed25519_public_key"`
+		ChallengeID         string `json:"challenge_id"`
+		ChallengeSignature  string `json:"challenge_signature"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
@@ -106,6 +107,17 @@ func (s *Server) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.HasPrefix(networkID, "room-") {
+		if req.RoomProtocolVersion != 1 {
+			writeJSON(w, http.StatusUpgradeRequired, map[string]any{"error": "room-capable client required", "error_code": "room_client_upgrade"})
+			return
+		}
+		if req.VirtualIP != "" {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "room IP addresses are assigned by the owner"})
+			return
+		}
+	}
+
 	ed25519PubKey := strings.TrimSpace(req.Ed25519PublicKey)
 
 	// If Ed25519 challenge is provided, verify it
@@ -166,12 +178,12 @@ func (s *Server) ListNodes(w http.ResponseWriter, r *http.Request) {
 		// The current account-scoped product model keeps that roster private to
 		// the account that owns the credential, even when the legacy `default`
 		// network is shared by multiple accounts.
-		devices, err := s.db.ListDevicesByUserAndNetwork(deviceClaims.UserID, deviceClaims.NetworkID)
+		devices, err := s.db.ListVisibleDevices(deviceClaims.UserID, deviceClaims.NetworkID)
 		if err != nil {
 			http.Error(w, `{"error":"failed to list nodes"}`, http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"nodes": devices})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"nodes": devices, "authorization_lease_seconds": 30})
 		return
 	}
 
@@ -194,12 +206,12 @@ func (s *Server) ListNodes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"access denied"}`, http.StatusForbidden)
 			return
 		}
-		devices, err := s.db.ListDevicesByUserAndNetwork(userClaims.UserID, networkID)
+		devices, err := s.db.ListVisibleDevices(userClaims.UserID, networkID)
 		if err != nil {
 			http.Error(w, `{"error":"failed to list nodes"}`, http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"nodes": devices})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"nodes": devices, "authorization_lease_seconds": 30})
 		return
 	}
 
@@ -374,6 +386,17 @@ func (s *Server) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.VirtualIP != "" {
+		device, err := s.db.GetDevice(pathDeviceID)
+		if err != nil {
+			http.Error(w, `{"error":"device not found"}`, http.StatusNotFound)
+			return
+		}
+		if strings.HasPrefix(device.NetworkID, "room-") {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "use the room owner IP assignment endpoint"})
+			return
+		}
+	}
 	if req.DeviceName != "" {
 		if err := s.db.UpdateDeviceName(pathDeviceID, req.DeviceName); err != nil {
 			writeDeviceMutationError(w, err, "device update failed")

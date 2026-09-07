@@ -365,6 +365,7 @@ pub enum ControlEvent {
 /// Control plane client state.
 #[derive(Debug)]
 struct ClientState {
+    room_authorization: Arc<crate::rooms::RoomAuthorization>,
     /// Whether we are registered.
     registered: bool,
     /// Known peers.
@@ -407,6 +408,8 @@ struct ControlErrorResponse {
 
 #[derive(Debug, Deserialize)]
 struct ListNodesResponse {
+    #[serde(default)]
+    authorization_lease_seconds: u64,
     #[serde(default)]
     nodes: Vec<DeviceResponse>,
 }

@@ -194,6 +194,12 @@ func (db *DB) ValidateDeviceCredential(token string) (*DeviceCredential, *Device
 		return nil, nil, fmt.Errorf("device not found: %w", err)
 	}
 
+	if strings.HasPrefix(device.NetworkID, "room-") {
+		allowed, err := db.UserHasNetworkAccess(device.UserID, device.NetworkID)
+		if err != nil || !allowed {
+			return nil, nil, ErrRoomAccess
+		}
+	}
 	return &cred, device, nil
 }
 

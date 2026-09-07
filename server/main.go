@@ -65,6 +65,7 @@ func main() {
 
 	// HTTP mux
 	mux := http.NewServeMux()
+	apiServer.RegisterRoomRoutes(mux)
 
 	// Public / auth-free routes
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {

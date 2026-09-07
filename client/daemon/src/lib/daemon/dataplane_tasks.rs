@@ -10,7 +10,8 @@ impl Daemon {
             let (dataplane, outbound_rx, inbound_tx) = DataPlane::new_bidirectional(tun, peers);
             let mut dataplane = dataplane
                 .with_acl(self.acl.clone(), self.config.node.node_id.clone())
-                .with_overlay_cidr(&self.config.network.cidr);
+                .with_overlay_cidr(&self.config.network.cidr)
+                .with_room_authorization(self.control.room_authorization().await);
 
             let outbound_transport = transport.clone();
             self.task_manager
@@ -65,7 +66,8 @@ impl Daemon {
                 DataPlane::new_bidirectional(tun, peers.clone());
             let mut dataplane = dataplane
                 .with_acl(self.acl.clone(), self.config.node.node_id.clone())
-                .with_overlay_cidr(&self.config.network.cidr);
+                .with_overlay_cidr(&self.config.network.cidr)
+                .with_room_authorization(self.control.room_authorization().await);
 
             let outbound_transport = transport.clone();
             self.task_manager

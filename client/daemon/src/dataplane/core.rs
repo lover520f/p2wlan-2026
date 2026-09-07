@@ -44,6 +44,7 @@ pub struct DataPlane<T> {
     acl: Option<Arc<RwLock<AclEngine>>>,
     local_node_id: Option<String>,
     overlay_v4: Option<Ipv4Cidr>,
+    room_authorization: Option<Arc<crate::rooms::RoomAuthorization>>,
     #[cfg(target_os = "android")]
     tun_turnaround: TunTurnaroundCorrelator,
 }
@@ -66,6 +67,7 @@ where
                 acl: None,
                 local_node_id: None,
                 overlay_v4: None,
+                room_authorization: None,
                 #[cfg(target_os = "android")]
                 tun_turnaround: TunTurnaroundCorrelator::default(),
             },
@@ -98,12 +100,22 @@ where
                 acl: None,
                 local_node_id: None,
                 overlay_v4: None,
+                room_authorization: None,
                 #[cfg(target_os = "android")]
                 tun_turnaround: TunTurnaroundCorrelator::default(),
             },
             outbound_rx,
             inbound_tx,
         )
+    }
+
+    pub fn with_room_authorization(mut self, authorization: Arc<crate::rooms::RoomAuthorization>) -> Self {
+        self.room_authorization = Some(authorization);
+        self
+    }
+
+    fn room_allows(&self, peer_id: &str, peer_ip: &str, local_ip: &str) -> bool {
+        self.room_authorization.as_ref().is_none_or(|authorization| authorization.allows(peer_id, peer_ip, local_ip))
     }
 
     /// Attach the live ACL used for both outbound and inbound overlay traffic.
@@ -316,6 +328,10 @@ where
             return Ok(());
         };
 
+        if !self.room_allows(&peer_id, &dst_ip, &src_ip) {
+            return Ok(());
+        }
+
         let routed_packet = if src_ip == self.tun.address() {
             packet[..total_len].to_vec()
         } else {
@@ -445,6 +461,9 @@ where
             );
             return Ok(());
         };
+        if !self.room_allows(&packet.peer_id, &src_ip, &dst_ip) {
+            return Ok(());
+        }
         if dst_ip != self.tun.address() {
             warn!(
                 "Dropping inbound packet from peer {} for unexpected destination {}; local TUN address is {}",
@@ -495,6 +514,9 @@ where
             return Ok(());
         }
 
+        if !self.room_allows(&packet.peer_id, &src_ip, &dst_ip) {
+            return Ok(());
+        }
         let tun_write_started = std::time::Instant::now();
         if let Some(trace) = trace.as_ref() {
             global_dataplane_profiler().record(

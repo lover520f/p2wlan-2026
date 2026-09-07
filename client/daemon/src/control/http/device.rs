@@ -71,7 +71,11 @@ pub(super) fn register_device_payload(config: &Config) -> serde_json::Value {
         "network_id": config.network.network_id,
     });
 
-    if config.network.manual {
+    if config.network.network_id.starts_with("room-") {
+        payload["room_protocol_version"] = serde_json::json!(1);
+    }
+
+    if config.network.manual && !config.network.network_id.starts_with("room-") {
         let virtual_ip = config.network.virtual_ip.trim();
         if !virtual_ip.is_empty() {
             payload["virtual_ip"] = serde_json::Value::String(virtual_ip.to_string());

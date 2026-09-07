@@ -145,6 +145,14 @@ func (db *DB) CreateSignalWithTraversalMetadata(fromNodeID, toNodeID, typ string
 // ErrSignalQueueLimit so the API can return 429 instead of silently dropping
 // or unbounded growth.
 func (db *DB) CreateSignalWithTraversalSession(fromNodeID, toNodeID, typ string, protocolVersion int64, candidates []string, candidateSources map[string]string, handshake string, punchAtMS, candidateGeneration, candidatesExpiresAtMS int64, sessionID, probeEphemeralPublicKey, senderPublicKey string) (*Signal, error) {
+	return db.createSignalWithTraversalSession(false, fromNodeID, toNodeID, typ, protocolVersion, candidates, candidateSources, handshake, punchAtMS, candidateGeneration, candidatesExpiresAtMS, sessionID, probeEphemeralPublicKey, senderPublicKey)
+}
+
+func (db *DB) CreateAuthorizedSignalWithTraversalSession(fromNodeID, toNodeID, typ string, protocolVersion int64, candidates []string, candidateSources map[string]string, handshake string, punchAtMS, candidateGeneration, candidatesExpiresAtMS int64, sessionID, probeEphemeralPublicKey, senderPublicKey string) (*Signal, error) {
+	return db.createSignalWithTraversalSession(true, fromNodeID, toNodeID, typ, protocolVersion, candidates, candidateSources, handshake, punchAtMS, candidateGeneration, candidatesExpiresAtMS, sessionID, probeEphemeralPublicKey, senderPublicKey)
+}
+
+func (db *DB) createSignalWithTraversalSession(authorize bool, fromNodeID, toNodeID, typ string, protocolVersion int64, candidates []string, candidateSources map[string]string, handshake string, punchAtMS, candidateGeneration, candidatesExpiresAtMS int64, sessionID, probeEphemeralPublicKey, senderPublicKey string) (*Signal, error) {
 	if candidates == nil {
 		candidates = []string{}
 	}
@@ -166,11 +174,20 @@ func (db *DB) CreateSignalWithTraversalSession(fromNodeID, toNodeID, typ string,
 
 	id := fmt.Sprintf("signal-%d-%d", time.Now().UnixNano(), nextSignalID.Add(1))
 	now := time.Now().Unix()
-	tx, err := db.Begin()
+	tx, err := db.beginRoomWrite()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	if authorize {
+		var allowed bool
+		if err := tx.QueryRow(devicesMayCommunicateSQL, fromNodeID, toNodeID).Scan(&allowed); err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, ErrRoomAccess
+		}
+	}
 
 	if _, err = tx.Exec(`DELETE FROM signals WHERE created_at < ?`, now-signalTTLSeconds); err != nil {
 		return nil, err

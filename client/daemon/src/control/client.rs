@@ -50,6 +50,7 @@ impl ControlClient {
         let (critical_auth_tx, critical_auth_rx) = watch::channel(None);
 
         let state = Arc::new(RwLock::new(ClientState {
+            room_authorization: Arc::new(crate::rooms::RoomAuthorization::new(&config.network.network_id)),
             registered: false,
             peers: HashMap::new(),
             virtual_ip: None,
@@ -176,6 +177,7 @@ impl ControlClient {
         drop(critical_ctrl_rx);
         drop(candidate_offer_rx);
         let state = Arc::new(RwLock::new(ClientState {
+            room_authorization: Arc::new(crate::rooms::RoomAuthorization::new("default")),
             registered: false,
             peers: HashMap::new(),
             virtual_ip: None,
@@ -829,5 +831,11 @@ impl ControlClient {
         response_rx.await.map_err(|_| {
             DaemonError::ControlPlane("critical peer answer response channel closed".into())
         })?
+    }
+}
+
+impl ControlClient {
+    pub async fn room_authorization(&self) -> Arc<crate::rooms::RoomAuthorization> {
+        self.state.read().await.room_authorization.clone()
     }
 }
