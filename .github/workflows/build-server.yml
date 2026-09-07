@@ -41,7 +41,10 @@ jobs:
             go version -m dist/p2wlan-control
             go version -m dist/p2wlan-relay
           } > dist/BUILD-METADATA.txt
-          sha256sum dist/p2wlan-control dist/p2wlan-relay > dist/SHA256SUMS
+          (
+            cd dist
+            sha256sum p2wlan-control p2wlan-relay > SHA256SUMS
+          )
           tar -C dist -czf p2wlan-server-linux-amd64.tar.gz \
             p2wlan-control p2wlan-relay BUILD-METADATA.txt SHA256SUMS
 
