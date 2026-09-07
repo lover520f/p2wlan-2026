@@ -23,47 +23,27 @@ jobs:
           channel: stable
           flutter-version-file: .fvmrc
           cache: true
-      - name: Apply checksum-bound source patch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
+      - name: Apply reviewed source corrections
         run: |
-          set -euo pipefail
           python3 - <<'PY'
-          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
-          blobs = ['8dd9eeb18b8e51a4ce607118109160944e9eb6f8', 'd88cf70ed274512842d3f4d5aaf44a344b01cda9', 'b36ebca0b713623f988893f085b2d8cdac8077fd', 'b7cef748243f2560ef178e2498c5118ed0434d39']
-          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'}
-          data = bytearray()
-          for sha in blobs:
-              request = urllib.request.Request('https://api.github.com/repos/yhan-sun/p2wlan/git/blobs/' + sha, headers=headers)
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  payload = json.load(response)
-              part = base64.b64decode(payload['content'])
-              assert hashlib.sha1(b'blob ' + str(len(part)).encode() + b'\0' + part).hexdigest() == sha
-              data.extend(part)
-          assert hashlib.sha256(data).hexdigest() == '4a2082b13ef32c2b413d0a9a774030063df52f329f2349ef7ce0c61c728139a3'
-          patch = lzma.decompress(data)
-          assert len(patch) == 108171
-          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'reviewed-room-client.patch'
-          path.write_bytes(patch)
-          subprocess.run(['git', 'apply', '--check', str(path)], check=True)
-          subprocess.run(['git', 'apply', '--index', str(path)], check=True)
-          paths = subprocess.check_output(['git', 'diff', '--cached', '--name-only']).decode().splitlines()
-          assert paths and all((p.startswith(('apps/', 'client/')) or p == '.github/workflows/release.yml') and '..' not in p.split('/') for p in paths)
-          release = pathlib.Path('.github/workflows/release.yml').read_text()
-          payload = json.dumps({'content': release, 'encoding': 'utf-8'}).encode()
-          request = urllib.request.Request('https://api.github.com/repos/yhan-sun/p2wlan/git/blobs', data=payload, headers={**headers, 'Content-Type': 'application/json'}, method='POST')
-          with urllib.request.urlopen(request, timeout=30) as response:
-              release_blob = json.load(response)['sha']
-          print('reviewed_release_blob=' + release_blob)
-          pathlib.Path(os.environ['RUNNER_TEMP'], 'room-source-metadata.json').write_text(json.dumps({'release_blob': release_blob}))
-          subprocess.run(['git', 'restore', '--source=HEAD', '--staged', '--worktree', '.github/workflows/release.yml'], check=True)
+          from pathlib import Path
+          p = Path('apps/flutter_client/lib/core/daemon/daemon_controller/android_vpn.dart')
+          text = p.read_text()
+          old = 'await transport.prepareRoom(requestJson)'
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, 'await (transport as AndroidRoomPreparingTransport).prepareRoom(requestJson)'))
+          p = Path('apps/flutter_client/test/rooms_page_test.dart')
+          text = p.read_text()
+          old = "find.widgetWithText(FilledButton, '创建房间')"
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, "find.ancestor(of: find.text('创建房间'), matching: find.byWidgetPredicate((widget) => widget is FilledButton))"))
           PY
       - name: Format and resolve pinned client dependencies
         run: |
           cargo fmt --all
           cd apps/flutter_client
           flutter pub get
+          dart fix --apply --code=curly_braces_in_flow_control_structures,use_null_aware_elements
           dart format .
       - name: Publish feature-only source commit
         shell: bash
@@ -73,21 +53,34 @@ jobs:
           test "$(git ls-remote origin refs/heads/feat/friend-rooms-20260907 | cut -f1)" = "$GITHUB_SHA"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'feat:接通好友房间界面邀请链接与Android独立身份'
+          git commit -m 'feat:修正房间Android类型检查与Flutter交互规范'
           git push origin "HEAD:refs/heads/feat/friend-rooms-source-${GITHUB_RUN_ID}"
           git archive --format=tar.gz HEAD -o "${RUNNER_TEMP}/p2wlan-client-source.tar.gz"
-          echo "source_branch=feat/friend-rooms-source-${GITHUB_RUN_ID}" >> "$GITHUB_STEP_SUMMARY"
-          echo "source_commit=$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          git rev-parse HEAD > "${RUNNER_TEMP}/room-source-commit.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: p2wlan-client-source-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/p2wlan-client-source.tar.gz
-            ${{ runner.temp }}/room-source-metadata.json
+            ${{ runner.temp }}/room-source-commit.txt
           retention-days: 3
-      - name: Client preflight analysis
+      - name: Client preflight analysis and room tests
         working-directory: apps/flutter_client
-        run: flutter analyze
-      - name: Client room preflight tests
-        working-directory: apps/flutter_client
-        run: flutter test test/room_api_test.dart test/rooms_page_test.dart
+        shell: bash
+        run: |
+          set +e
+          flutter analyze > "$RUNNER_TEMP/room-analysis.txt" 2>&1
+          analysis=$?
+          flutter test test/room_api_test.dart test/rooms_page_test.dart --reporter expanded > "$RUNNER_TEMP/room-tests.txt" 2>&1
+          tests=$?
+          cat "$RUNNER_TEMP/room-analysis.txt"
+          tail -120 "$RUNNER_TEMP/room-tests.txt"
+          test "$analysis" = 0 && test "$tests" = 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: p2wlan-room-preflight-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/room-analysis.txt
+            ${{ runner.temp }}/room-tests.txt
+          retention-days: 3
