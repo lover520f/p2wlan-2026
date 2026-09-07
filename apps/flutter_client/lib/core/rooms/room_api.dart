@@ -78,8 +78,9 @@ bool validRoomIp(String ip, String cidr) {
   final address = InternetAddress.tryParse(ip);
   if (address == null ||
       address.type != InternetAddressType.IPv4 ||
-      address.address != ip)
+      address.address != ip) {
     return false;
+  }
   final bytes = address.rawAddress;
   final subnet = InternetAddress(cidr.split('/').first).rawAddress;
   return bytes[0] == subnet[0] &&
@@ -282,11 +283,7 @@ class RoomApi {
       (await request(
         'POST',
         ['join'],
-        {
-          'room_code': code,
-          if (password != null) 'password': password,
-          if (invitation != null) 'invite_token': invitation,
-        },
+        {'room_code': code, 'password': ?password, 'invite_token': ?invitation},
       ))['room'],
     ),
   );

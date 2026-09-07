@@ -86,8 +86,9 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
     _roomLinkSubscription = widget.roomLinks?.listen((uri) {
       if (uri.scheme != 'p2wlan' ||
           uri.host != 'join' ||
-          uri.toString().length > 4096)
+          uri.toString().length > 4096) {
         return;
+      }
       _pendingRoomLink = uri;
       _scheduleRoomLink();
     }, onError: (Object _) {});
@@ -170,8 +171,9 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
         !_authenticated ||
         _needsOnboarding ||
         _openingRoomLink ||
-        _pendingRoomLink == null)
+        _pendingRoomLink == null) {
       return;
+    }
     _openingRoomLink = true;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final navigator = _navigatorKey.currentState;

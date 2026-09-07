@@ -51,7 +51,11 @@ extension DaemonControllerAndroidVpn on DaemonController {
         if (transport is! AndroidRoomPreparingTransport) {
           throw const RoomException('当前 Android 原生组件不支持房间，请更新完整安装包');
         }
-        final prepared = jsonDecode(await transport.prepareRoom(requestJson));
+        final prepared = jsonDecode(
+          await (transport as AndroidRoomPreparingTransport).prepareRoom(
+            requestJson,
+          ),
+        );
         if (prepared is! Map ||
             prepared['error'] != null ||
             prepared['cidr'] is! String ||

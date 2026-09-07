@@ -147,7 +147,10 @@ void main() {
       expect(find.byType(PopupMenuButton<String>), findsOneWidget);
       expect(find.text('创建房间'), findsOneWidget);
       final create = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, '创建房间'),
+        find.ancestor(
+          of: find.text('创建房间'),
+          matching: find.byWidgetPredicate((widget) => widget is FilledButton),
+        ),
       );
       expect(create.onPressed, isNull);
       expect(tester.takeException(), isNull);

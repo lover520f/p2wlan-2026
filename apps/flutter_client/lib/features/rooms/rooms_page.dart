@@ -61,8 +61,9 @@ class _RoomsPageState extends State<RoomsPage> {
     super.initState();
     final settings = widget.settingsStore.settings;
     try {
-      if (settings.authToken.trim().isEmpty)
+      if (settings.authToken.trim().isEmpty) {
         throw const RoomException('请先登录控制服务器后使用好友房间');
+      }
       _apiInstance =
           widget.api ??
           RoomApi(server: settings.controlServer, token: settings.authToken);
@@ -78,8 +79,9 @@ class _RoomsPageState extends State<RoomsPage> {
     });
     if (widget.initialInvitation != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted)
+        if (mounted) {
           unawaited(_joinWithLink(widget.initialInvitation.toString()));
+        }
       });
     }
   }
@@ -123,8 +125,9 @@ class _RoomsPageState extends State<RoomsPage> {
       }
     } finally {
       _refreshing = false;
-      if (mounted && generation == _generation)
+      if (mounted && generation == _generation) {
         setState(() => _loading = false);
+      }
     }
   }
 
@@ -286,8 +289,9 @@ class _RoomsPageState extends State<RoomsPage> {
           '连接$name',
           '将先断开当前虚拟网络，再连接$name。已加入的其他房间会保留，本次只启用这个网络。',
         ) ||
-        !mounted)
+        !mounted) {
       return;
+    }
     await _run(() async {
       final stopped = await widget.statusStore.stopDaemon();
       if (!stopped.ok) throw const RoomException('旧网络未能停止，未切换房间。请先停止本地网络服务。');
@@ -412,8 +416,9 @@ class _RoomsPageState extends State<RoomsPage> {
               ? '该账号的所有房间设备将断开，解除封禁前无法再次加入。'
               : '该账号的所有房间设备将断开，但持有有效密码或邀请时仍可重新加入。',
         ) ||
-        !mounted)
+        !mounted) {
       return;
+    }
     await _run(() async {
       await _api.request(ban ? 'PUT' : 'DELETE', [
         room.id,
@@ -449,8 +454,9 @@ class _RoomsPageState extends State<RoomsPage> {
     Map<String, dynamic> device,
   ) async {
     if (!await _confirm('删除房间设备', '将断开该设备。其账号仍是成员，可以重新连接；要阻止重新加入，请封禁账号。') ||
-        !mounted)
+        !mounted) {
       return;
+    }
     await _run(() async {
       await _api.request('DELETE', [
         room.id,
@@ -467,8 +473,9 @@ class _RoomsPageState extends State<RoomsPage> {
               ? '将移除所有成员并撤销房间凭证。此操作不可恢复，重新创建会获得新房间号。'
               : '你的房间设备会被移除，个人网络和其他房间不受影响。',
         ) ||
-        !mounted)
+        !mounted) {
       return;
+    }
     await _run(() async {
       if (widget.settingsStore.settings.networkId == room.id) {
         if (_canConnect) {
