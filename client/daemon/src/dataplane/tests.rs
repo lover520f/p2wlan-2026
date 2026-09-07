@@ -446,3 +446,54 @@ use std::net::Ipv4Addr;
         );
         task.abort();
     }
+
+    #[tokio::test]
+    async fn room_revocation_blocks_both_directions_even_with_cached_peers() {
+        let peers = Arc::new(PeerManager::new(
+            Config::generate_default("http://ctrl.test", "room-test").unwrap(),
+        ));
+        peers.add_peer(&peer("peer-b", "10.21.1.3")).await;
+        let authorization = Arc::new(crate::rooms::RoomAuthorization::new("room-test"));
+        assert!(authorization.replace("10.21.1.2", [("peer-b".into(), "10.21.1.3".into())], std::time::Instant::now(), 30));
+        let (tun, ctrl) = MockTunDevice::new_pair("room0", 1420, "10.21.1.2");
+        let (dataplane, mut outbound_rx, inbound_tx) = DataPlane::new_bidirectional(tun, peers.clone());
+        let mut dataplane = dataplane.with_room_authorization(authorization.clone());
+        let task = tokio::spawn(async move { dataplane.run().await });
+        let outbound = Ipv4Packet::build_icmp_echo_request(
+            Ipv4Addr::new(10, 21, 1, 2), Ipv4Addr::new(10, 21, 1, 3), 1, 1, b"room",
+        );
+        let inbound = Ipv4Packet::build_icmp_echo_request(
+            Ipv4Addr::new(10, 21, 1, 3), Ipv4Addr::new(10, 21, 1, 2), 1, 1, b"room",
+        );
+        ctrl.inject(outbound.clone()).await.unwrap();
+        assert_eq!(timeout(Duration::from_secs(1), outbound_rx.recv()).await.unwrap().unwrap().packet, outbound);
+        inbound_tx.send(InboundPacket { peer_id: "peer-b".into(), packet: inbound.clone(), session_instance: None, from_previous_session: false, trace: None }).await.unwrap();
+        assert_eq!(timeout(Duration::from_secs(1), ctrl.recv_written()).await.unwrap().unwrap(), inbound);
+        authorization.invalidate();
+        assert!(peers.get_connection("peer-b").await.is_some());
+        ctrl.inject(outbound).await.unwrap();
+        inbound_tx.send(InboundPacket { peer_id: "peer-b".into(), packet: inbound, session_instance: None, from_previous_session: false, trace: None }).await.unwrap();
+        assert!(timeout(Duration::from_millis(100), outbound_rx.recv()).await.is_err());
+        assert!(timeout(Duration::from_millis(100), ctrl.recv_written()).await.is_err());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn room_dataplane_rejects_cross_network_source_before_normalization() {
+        let peers = Arc::new(PeerManager::new(
+            Config::generate_default("http://ctrl.test", "room-test").unwrap(),
+        ));
+        peers.add_peer(&peer("peer-b", "10.21.1.3")).await;
+        let authorization = Arc::new(crate::rooms::RoomAuthorization::new("room-test"));
+        assert!(authorization.replace("10.21.1.2", [("peer-b".into(), "10.21.1.3".into())], std::time::Instant::now(), 30));
+        let (tun, ctrl) = MockTunDevice::new_pair("room0", 1420, "10.21.1.2");
+        let (dataplane, mut outbound_rx) = DataPlane::new(tun, peers);
+        let mut dataplane = dataplane.with_room_authorization(authorization);
+        let task = tokio::spawn(async move { dataplane.run().await });
+        for source in [Ipv4Addr::new(10, 20, 0, 2), Ipv4Addr::new(10, 21, 2, 2)] {
+            let packet = Ipv4Packet::build_icmp_echo_request(source, Ipv4Addr::new(10, 21, 1, 3), 1, 1, b"cross-room");
+            ctrl.inject(packet).await.unwrap();
+        }
+        assert!(timeout(Duration::from_millis(100), outbound_rx.recv()).await.is_err());
+        task.abort();
+    }

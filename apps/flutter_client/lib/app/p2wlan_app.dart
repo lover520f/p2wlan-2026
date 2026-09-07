@@ -17,6 +17,8 @@ import '../core/models/diagnostics_models.dart';
 import '../core/state/settings_store.dart';
 import '../core/state/status_store.dart';
 import '../features/auth/login_page.dart';
+import '../features/rooms/rooms_page.dart';
+import '../core/rooms/room_profiles.dart';
 import '../features/onboarding/onboarding_page.dart';
 import '../shared/widgets/windows_window_controls.dart';
 import 'app_constants.dart';
@@ -26,6 +28,7 @@ class P2WlanApp extends StatefulWidget {
   const P2WlanApp({
     super.key,
     this.initialRefresh = true,
+    this.roomLinks,
     this.autoStartPolling = true,
     this.settingsStore,
     this.diagnosticsApi,
@@ -35,6 +38,7 @@ class P2WlanApp extends StatefulWidget {
   });
 
   final bool initialRefresh;
+  final Stream<Uri>? roomLinks;
   final bool autoStartPolling;
   final SettingsStore? settingsStore;
   final DiagnosticsApi? diagnosticsApi;
@@ -51,6 +55,11 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
   late final StatusStore _statusStore;
   DesktopTrayController? _desktopTrayController;
   DesktopWindowStatusController? _desktopWindowStatusController;
+  final _navigatorKey = GlobalKey<NavigatorState>();
+  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+  StreamSubscription<Uri>? _roomLinkSubscription;
+  Uri? _pendingRoomLink;
+  bool _openingRoomLink = false;
   var _ready = false;
   var _authenticated = false;
 
@@ -74,6 +83,14 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
           ? StatusStore.defaultWindowsRouteVerificationInterval
           : StatusStore.defaultRouteVerificationInterval,
     );
+    _roomLinkSubscription = widget.roomLinks?.listen((uri) {
+      if (uri.scheme != 'p2wlan' ||
+          uri.host != 'join' ||
+          uri.toString().length > 4096)
+        return;
+      _pendingRoomLink = uri;
+      _scheduleRoomLink();
+    }, onError: (Object _) {});
     WidgetsBinding.instance.addObserver(this);
     _bootstrap();
   }
@@ -148,10 +165,57 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
             'no-adapter-exit';
   }
 
+  void _scheduleRoomLink() {
+    if (!_ready ||
+        !_authenticated ||
+        _needsOnboarding ||
+        _openingRoomLink ||
+        _pendingRoomLink == null)
+      return;
+    _openingRoomLink = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final navigator = _navigatorKey.currentState;
+      if (!mounted || !_authenticated || navigator == null) {
+        _openingRoomLink = false;
+        return;
+      }
+      final invitation = _pendingRoomLink;
+      _pendingRoomLink = null;
+      try {
+        await navigator.push<void>(
+          MaterialPageRoute(
+            builder: (_) => RoomsPage(
+              settingsStore: _settingsStore,
+              statusStore: _statusStore,
+              initialInvitation: invitation,
+            ),
+          ),
+        );
+      } finally {
+        _openingRoomLink = false;
+        if (mounted) _scheduleRoomLink();
+      }
+    });
+  }
+
   Future<void> _logout() async {
     final settings = _settingsStore.settings;
+    if (isRoomNetwork(settings.networkId) &&
+        _capabilities.canActAsLocalVpnNode) {
+      final stopped = await _statusStore.stopDaemon();
+      if (!stopped.ok) {
+        _messengerKey.currentState?.showSnackBar(
+          const SnackBar(content: Text('本地房间网络未能停止，退出登录已取消。请先停止本地网络服务。')),
+        );
+        return;
+      }
+    }
+    _pendingRoomLink = null;
     await _settingsStore.updateSettings(
-      settings.copyWith(authToken: '', manualMode: false),
+      (isRoomNetwork(settings.networkId)
+              ? personalNetworkSettings(settings)
+              : settings)
+          .copyWith(authToken: '', manualMode: false),
     );
     await _statusStore.refresh();
     if (mounted) {
@@ -163,6 +227,7 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    unawaited(_roomLinkSubscription?.cancel());
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_desktopTrayController?.dispose());
     _desktopWindowStatusController?.dispose();
@@ -185,7 +250,10 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
         final strings = AppStrings.fromCode(
           _settingsStore.settings.languageCode,
         );
+        _scheduleRoomLink();
         return MaterialApp(
+          navigatorKey: _navigatorKey,
+          scaffoldMessengerKey: _messengerKey,
           title: p2wlanAppName,
           debugShowCheckedModeBanner: false,
           theme: AppTheme.lightTheme,

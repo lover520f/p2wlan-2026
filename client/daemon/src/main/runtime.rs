@@ -163,6 +163,7 @@ async fn run_daemon_inner(
     // Check for --init flag (generate new config)
     if cli.init {
         let mut config = Config::generate_default(cli.control_url(), cli.network_id())?;
+        validate_room_profile_overrides(&config, &cli)?;
         apply_cli_overrides(&mut config, &cli);
         if let Some(ref token) = token_file_value {
             config.control.auth_token = token.clone();
@@ -203,6 +204,7 @@ async fn run_daemon_inner(
     } else {
         info!("No config file found. Generating default config...");
         let mut config = Config::generate_default(cli.control_url(), cli.network_id())?;
+        validate_room_profile_overrides(&config, &cli)?;
         apply_cli_overrides(&mut config, &cli);
         if let Some(ref token) = token_file_value {
             config.control.auth_token = token.clone();
@@ -218,6 +220,7 @@ async fn run_daemon_inner(
     };
 
     let mut config = config;
+    validate_room_profile_overrides(&config, &cli)?;
     apply_cli_overrides(&mut config, &cli);
     if let Some(ref token) = token_file_value {
         config.control.auth_token = token.clone();

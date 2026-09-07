@@ -29,6 +29,7 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  app_links: 7.2.1
   crypto: ^3.0.7
   flutter:
     sdk: flutter

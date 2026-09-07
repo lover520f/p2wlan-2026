@@ -359,13 +359,16 @@ extension DaemonControllerDiagnosticsPaths on DaemonController {
     return '$host:${parsed.port}';
   }
 
-  File _defaultConfigPath() {
+  File _defaultConfigPath(AppSettings settings) {
     final override = Platform.environment['P2WLAN_CONFIG'];
-    if (override != null && override.trim().isNotEmpty) {
-      return File(override.trim());
-    }
+    final personal = override != null && override.trim().isNotEmpty
+        ? File(override.trim())
+        : File(
+            '${_configBaseDir().path}${Platform.pathSeparator}p2wlan-config.json',
+          );
+    if (!isRoomNetwork(settings.networkId)) return personal;
     return File(
-      '${_configBaseDir().path}${Platform.pathSeparator}p2wlan-config.json',
+      '${personal.parent.path}${Platform.pathSeparator}rooms${Platform.pathSeparator}${roomProfileId(settings)}${Platform.pathSeparator}p2wlan-config.json',
     );
   }
 
