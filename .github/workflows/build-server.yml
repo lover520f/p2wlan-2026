@@ -1,0 +1,53 @@
+name: Build Server
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-server:
+    name: Build Go control and relay (linux amd64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: server/go.mod
+          cache: true
+          cache-dependency-path: server/go.sum
+
+      - name: Test server
+        working-directory: server
+        run: go test ./...
+
+      - name: Build server binaries
+        working-directory: server
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -o dist/p2wlan-control .
+          go build -trimpath -ldflags="-s -w" -o dist/p2wlan-relay ./relay
+          chmod 0755 dist/p2wlan-control dist/p2wlan-relay
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "go=$(go version)"
+            go version -m dist/p2wlan-control
+            go version -m dist/p2wlan-relay
+          } > dist/BUILD-METADATA.txt
+          sha256sum dist/p2wlan-control dist/p2wlan-relay > dist/SHA256SUMS
+          tar -C dist -czf p2wlan-server-linux-amd64.tar.gz \
+            p2wlan-control p2wlan-relay BUILD-METADATA.txt SHA256SUMS
+
+      - name: Upload server artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: p2wlan-server-linux-amd64-${{ github.sha }}
+          path: server/p2wlan-server-linux-amd64.tar.gz
+          retention-days: 7
