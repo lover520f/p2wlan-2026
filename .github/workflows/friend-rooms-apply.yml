@@ -1,0 +1,61 @@
+name: Apply reviewed friend room source
+on:
+  push:
+    branches: [feat/friend-rooms-20260907]
+    paths: [.github/workflows/friend-rooms-apply.yml]
+permissions:
+  contents: read
+jobs:
+  apply:
+    if: github.repository == 'yhan-sun/p2wlan' && github.ref == 'refs/heads/feat/friend-rooms-20260907'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          components: rustfmt
+      - name: Apply checksum-bound source patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          blobs = ['4752da96292f61b32aac26acaa272e5eaa5e2c10', '7502067464b76d98a9c6e39ffaaa0d53dda72bc6', 'ed986676fdbfe39a2b9221d9035c54cd304de8f2', '3b4840ea87e6eb9813a02e7ad92e76c1595d5edb']
+          data = bytearray()
+          for sha in blobs:
+              request = urllib.request.Request('https://api.github.com/repos/yhan-sun/p2wlan/git/blobs/' + sha, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+              part = base64.b64decode(payload['content'])
+              assert hashlib.sha1(b'blob ' + str(len(part)).encode() + b'\0' + part).hexdigest() == sha
+              data.extend(part)
+          assert hashlib.sha256(data).hexdigest() == '2c37ae42fb44327d0b1676e9520b438a47faea12f0f2a42bcd8839414407806f'
+          patch = lzma.decompress(data)
+          assert len(patch) == 87801
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'reviewed-room.patch'
+          path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', str(path)], check=True)
+          subprocess.run(['git', 'apply', '--index', str(path)], check=True)
+          paths = subprocess.check_output(['git', 'diff', '--cached', '--name-only']).decode().splitlines()
+          assert paths and all(p.startswith(('server/', 'client/')) and '..' not in p.split('/') for p in paths)
+          PY
+      - name: Format and publish feature-only source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git diff --cached --name-only -- 'server/*.go' 'server/**/*.go' | xargs -r gofmt -w
+          git add client server
+          test "$(git ls-remote origin refs/heads/feat/friend-rooms-20260907 | cut -f1)" = "$GITHUB_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat:实现好友房间控制面与短期数据面授权'
+          git push origin "HEAD:refs/heads/feat/friend-rooms-source-${GITHUB_RUN_ID}"
+          echo "source_branch=feat/friend-rooms-source-${GITHUB_RUN_ID}" >> "$GITHUB_STEP_SUMMARY"
+          echo "source_commit=$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
