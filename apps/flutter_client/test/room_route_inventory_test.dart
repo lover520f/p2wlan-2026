@@ -2,6 +2,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:p2wlan_flutter_client/core/rooms/route_inventory.dart';
 
 void main() {
+  test('route conflict explains both ranges and the actual interface', () {
+    final message = nativeRoomConflictMessage(
+      '10.21.1.0/24',
+      const NativeIpv4Route('10.0.0.0/8', 'Other VPN'),
+    );
+    expect(message, contains('10.21.1.0/24'));
+    expect(message, contains('10.0.0.0/8'));
+    expect(message, contains('Other VPN'));
+    expect(message, contains('房间已加入，但尚未连接'));
+    expect(message, contains('不会自动删除现有路由'));
+  });
+
   test('Linux routes include wider LAN and policy tables', () {
     final routes = parseJsonRouteInventory('''[
       {"dst":"default","gateway":"192.168.1.1","dev":"eth0"},

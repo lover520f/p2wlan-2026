@@ -11,6 +11,9 @@ import '../models/diagnostics_models.dart';
 import 'settings_store.dart';
 import '../rooms/parallel_rooms.dart';
 import '../rooms/desktop_room_runtime.dart';
+import '../rooms/room_profiles.dart';
+
+part 'status_store_session.dart';
 
 class StatusStore extends ChangeNotifier {
   StatusStore({
@@ -46,6 +49,8 @@ class StatusStore extends ChangeNotifier {
              clearMacosAdminPassword: settingsStore.clearMacosAdminPassword,
            ) {
     _lastDiagnosticsUrl = settingsStore.settings.diagnosticsUrl;
+    _lastAccountSession = accountSessionKey(settingsStore.settings);
+    settingsStore.applySessionChange = _applyAccountChange;
     settingsStore.addListener(_handleSettingsChanged);
   }
 
@@ -133,7 +138,11 @@ class StatusStore extends ChangeNotifier {
   final _peerOnlineOrder = <String, int>{};
   var _nextPeerOnlineOrder = 0;
   late String _lastDiagnosticsUrl;
+  late String _lastAccountSession;
+  bool _sessionChanging = false;
+  bool _accountRequiresRestart = false;
 
+  int get sessionRevision => _refreshGeneration;
   DiagnosticsSnapshot? get snapshot => _snapshot;
   bool get healthReachable => _healthReachable;
   bool get daemonReachable => _healthReachable || _snapshot != null;
@@ -484,7 +493,9 @@ class StatusStore extends ChangeNotifier {
   }
 
   Future<void> refresh({bool silent = false}) {
-    if (_disposed) return Future<void>.value();
+    if (_disposed || _sessionChanging || _accountRequiresRestart) {
+      return Future<void>.value();
+    }
     _refreshPending = true;
     final activeRefresh = _refreshFuture;
     if (activeRefresh != null) {
@@ -514,7 +525,10 @@ class StatusStore extends ChangeNotifier {
           generation,
           throttleMetrics: !_showRefreshActivity,
         );
-      } while (_refreshPending && !_disposed);
+      } while (_refreshPending &&
+          !_disposed &&
+          !_sessionChanging &&
+          !_accountRequiresRestart);
       completer.complete();
     } catch (error, stackTrace) {
       completer.completeError(error, stackTrace);
@@ -534,7 +548,10 @@ class StatusStore extends ChangeNotifier {
     final stopwatch = Stopwatch()..start();
     final appEpoch = lifecycleCoordinator.appEpoch;
     bool acceptsLifecycle() =>
-        !_disposed && lifecycleCoordinator.acceptsAppEpoch(appEpoch);
+        !_disposed &&
+        !_sessionChanging &&
+        !_accountRequiresRestart &&
+        lifecycleCoordinator.acceptsAppEpoch(appEpoch);
     try {
       final health = await diagnosticsApi.fetchHealth(url);
       if (generation != _refreshGeneration) {
@@ -672,6 +689,10 @@ class StatusStore extends ChangeNotifier {
         _lastRequestDuration = stopwatch.elapsed;
       }
     }
+  }
+
+  void _notifySessionChanged() {
+    if (!_disposed) notifyListeners();
   }
 
   void _clearSnapshot() {
@@ -857,10 +878,11 @@ class StatusStore extends ChangeNotifier {
         message: 'All networks are shutting down.',
       );
     }
-    return _runDaemonCommand(
-      () => daemonController.start(settingsStore.settings),
-      settlePeerCatalog: true,
-    );
+    return _runDaemonCommand(() async {
+      final result = await daemonController.start(settingsStore.settings);
+      if (result.ok) _accountRequiresRestart = false;
+      return result;
+    }, settlePeerCatalog: true);
   }
 
   Future<DaemonCommandResult> stopDaemon() {
@@ -1069,9 +1091,16 @@ class StatusStore extends ChangeNotifier {
   }
 
   void _handleSettingsChanged() {
-    unawaited(parallelRooms.credentialsChanged());
+    final nextSession = accountSessionKey(settingsStore.settings);
+    final accountChanged = nextSession != _lastAccountSession;
+    if (accountChanged) {
+      _lastAccountSession = nextSession;
+      _accountRequiresRestart = true;
+      unawaited(parallelRooms.credentialsChanged());
+      _clearAccountHistory();
+    }
     final nextDiagnosticsUrl = settingsStore.settings.diagnosticsUrl;
-    if (nextDiagnosticsUrl == _lastDiagnosticsUrl) return;
+    if (!accountChanged && nextDiagnosticsUrl == _lastDiagnosticsUrl) return;
     _lastDiagnosticsUrl = nextDiagnosticsUrl;
     _refreshGeneration += 1;
     cancelSpeedTest();
@@ -1102,6 +1131,9 @@ class StatusStore extends ChangeNotifier {
     _staleTimer?.cancel();
     _automaticRefreshFuture = null;
     settingsStore.removeListener(_handleSettingsChanged);
+    if (settingsStore.applySessionChange == _applyAccountChange) {
+      settingsStore.applySessionChange = null;
+    }
     diagnosticsApi.close();
     super.dispose();
   }

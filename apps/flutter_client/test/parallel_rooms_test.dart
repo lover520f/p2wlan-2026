@@ -156,10 +156,21 @@ void main() {
     expect(runtimes[room(1).id]!.stops, 0);
   });
 
-  test('a larger primary CIDR conflict fails closed', () async {
-    settings = settings.copyWith(overlayCidr: '10.0.0.0/8');
-    expect((await manager.connect(room(1))).ok, isFalse);
-    expect(runtimes, isEmpty);
+  test(
+    'an inactive saved prefix does not replace live route validation',
+    () async {
+      settings = settings.copyWith(overlayCidr: '10.0.0.0/8');
+      expect((await manager.connect(room(1))).ok, isTrue);
+      expect(runtimes[room(1).id]!.starts, 1);
+    },
+  );
+
+  test('unchanged credentials do not stop a running room', () async {
+    await manager.connect(room(1));
+    settings = settings.copyWith(deviceName: 'renamed');
+    expect((await manager.credentialsChanged()).ok, isTrue);
+    expect(runtimes[room(1).id]!.stops, 0);
+    expect(manager.session(room(1).id)!.phase, RoomConnectionPhase.running);
   });
 
   test('stop all cancels queued starts without leaking a runtime', () async {

@@ -404,7 +404,14 @@ class _LoginPageState extends State<LoginPage> {
       widget.onAuthenticated();
     } catch (error) {
       if (mounted) {
-        setState(() => _error = _errorTextFor(strings, error));
+        setState(
+          () => _error = error is AccountSessionChangeException
+              ? _LoginError(
+                  title: strings.loginFailedTitle,
+                  body: error.message,
+                )
+              : _errorTextFor(strings, error),
+        );
       }
     } finally {
       if (mounted) {

@@ -26,6 +26,8 @@ Future<_Stores> _makeStores({
   DaemonController? daemonController,
   bool manualMode = false,
   SecureTokenRepository? tokenRepository,
+  String authToken = '',
+  String? deviceName,
 }) async {
   final tempDir = await Directory.systemTemp.createTemp('p2wlan_flutter_test_');
   final repo = tokenRepository ?? InMemorySecureTokenRepository();
@@ -38,6 +40,8 @@ Future<_Stores> _makeStores({
     settingsStore.settings.copyWith(
       languageCode: AppLanguage.english.code,
       manualMode: manualMode,
+      authToken: authToken,
+      deviceName: deviceName ?? settingsStore.settings.deviceName,
     ),
   );
   final statusStore = StatusStore(

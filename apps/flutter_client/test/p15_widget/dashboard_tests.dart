@@ -831,7 +831,7 @@ void _registerDashboardTests() {
         of: find.byType(NavigationBar),
         matching: find.byType(NavigationDestination),
       ),
-      findsNWidgets(3),
+      findsNWidgets(4),
     );
 
     await tester.tap(find.byKey(const Key('home-check-issues')));
@@ -843,7 +843,7 @@ void _registerDashboardTests() {
         of: find.byType(NavigationBar),
         matching: find.byType(NavigationDestination),
       ),
-      findsNWidgets(3),
+      findsNWidgets(4),
     );
     expect(tester.takeException(), isNull);
   });

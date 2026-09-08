@@ -9,14 +9,22 @@ internal object RoomProfilePaths {
 
     fun isRoom(request: JSONObject): Boolean = request.optString("network_id").startsWith("room-")
 
-    fun configPath(filesDir: File, request: JSONObject): File {
+    fun configPath(filesDir: File, request: JSONObject): File = configPath(
+        filesDir,
+        request.optString("network_id"),
+        request.optString("profile_id"),
+        request.optBoolean("manual_mode", false),
+        request.optString("auth_token").isNotBlank(),
+    )
+
+    fun configPath(filesDir: File, network: String, profile: String, manual: Boolean, authenticated: Boolean): File {
         val root = File(filesDir, "p2wlan")
-        if (!isRoom(request)) return File(root, "p2wlan-config.json")
-        require(roomId.matches(request.optString("network_id"))) { "Invalid room identity" }
-        val profile = request.optString("profile_id")
-        require(profileId.matches(profile)) { "Room profile identity is required" }
-        require(!request.optBoolean("manual_mode", false)) { "Rooms require managed networking" }
-        return File(File(File(root, "rooms"), profile), "p2wlan-config.json")
+        val room = network.startsWith("room-")
+        if (!room && (manual || !authenticated)) return File(root, "p2wlan-config.json")
+        if (room) require(roomId.matches(network)) { "Invalid room identity" }
+        require(profileId.matches(profile)) { "Account profile identity is required" }
+        require(!manual && authenticated) { "Managed profiles require account login" }
+        return File(File(File(root, if (room) "rooms" else "accounts"), profile), "p2wlan-config.json")
     }
 
     fun validateAddress(request: JSONObject) {

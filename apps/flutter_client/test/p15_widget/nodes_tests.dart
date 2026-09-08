@@ -35,19 +35,12 @@ void _registerNodesTests() {
     final stores = (await tester.runAsync(
       () => _makeStores(
         api: _FakeDiagnosticsApi(health: true, snapshot: snapshot),
+        authToken: 'token',
+        deviceName: 'studio-mac',
       ),
     ))!;
     addTearDown(stores.dispose);
 
-    await tester.runAsync(
-      () => stores.settingsStore.updateSettings(
-        stores.settingsStore.settings.copyWith(
-          authToken: 'token',
-          deviceName: 'studio-mac',
-          manualMode: false,
-        ),
-      ),
-    );
     await stores.statusStore.refresh();
     await tester.pumpWidget(
       _TestApp(

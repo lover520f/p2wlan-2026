@@ -516,9 +516,9 @@ void _registerPhase7Tests() {
           textScale: scale,
         );
         expect(tester.takeException(), isNull);
-        // Verify mobile bottom navigation has exactly 3 destinations.
+        // Verify mobile bottom navigation has exactly 4 destinations.
         final navBar = tester.widget<NavigationBar>(find.byType(NavigationBar));
-        expect(navBar.destinations.length, 3);
+        expect(navBar.destinations.length, 4);
       });
     }
 

@@ -111,7 +111,7 @@ void _registerTroubleshootingShellTests() {
             of: find.byType(NavigationBar),
             matching: find.byType(NavigationDestination),
           ),
-          findsNWidgets(3),
+          findsNWidgets(4),
         );
       }
       expect(tester.takeException(), isNull);
@@ -154,7 +154,7 @@ void _registerTroubleshootingShellTests() {
   });
 
   testWidgets(
-    'mobile 390: three tabs, troubleshooting via overflow, no route actions',
+    'mobile 390: four tabs, troubleshooting via overflow, no route actions',
     (tester) async {
       final stores = await healthyStores(tester);
       await pumpShell(
@@ -169,7 +169,7 @@ void _registerTroubleshootingShellTests() {
           of: find.byType(NavigationBar),
           matching: find.byType(NavigationDestination),
         ),
-        findsNWidgets(3),
+        findsNWidgets(4),
       );
       expect(find.text('Tunnels'), findsNothing);
 

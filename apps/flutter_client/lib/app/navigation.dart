@@ -15,6 +15,7 @@ import '../core/state/status_store.dart';
 import '../features/dashboard/dashboard_page.dart';
 import '../features/diagnostics/diagnostics_page.dart';
 import '../features/nodes/nodes_page.dart';
+import '../features/rooms/rooms_page.dart';
 import '../features/settings/settings_page.dart';
 import '../shared/layout/app_breakpoints.dart';
 import '../shared/widgets/app_nav_rail.dart';
@@ -60,7 +61,7 @@ class _P2WlanShellState extends State<P2WlanShell> {
 
   /// Last primary (bottom-bar) section, kept so the mobile bar keeps a valid
   /// selection while a secondary section (troubleshooting) is open — no fake
-  /// fourth destination, never an out-of-range index.
+  /// extra destination, never an out-of-range index.
   var _lastPrimarySection = P2WlanSection.home;
 
   /// Whether the Settings page currently has unsaved drafts across any
@@ -108,7 +109,7 @@ class _P2WlanShellState extends State<P2WlanShell> {
             breakpoint == AppBreakpoint.expanded ||
             (_isDesktopShell &&
                 constraints.maxWidth >= AppBreakpoints.desktopSidebarMinWidth);
-        // Phones get the three-item bottom bar; desktop windows keep desktop
+        // Phones get the four-item bottom bar; desktop windows keep desktop
         // interaction even when squeezed below the compact width.
         final useBottomNav =
             breakpoint == AppBreakpoint.compact && !_isDesktopShell;
@@ -235,6 +236,13 @@ class _P2WlanShellState extends State<P2WlanShell> {
         onOpenDevices: () => _select(P2WlanSection.devices),
         onOpenSettings: () => _select(P2WlanSection.settings),
       ),
+      P2WlanSection.interconnect => RoomsPage(
+        settingsStore: widget.settingsStore,
+        statusStore: widget.statusStore,
+        capabilities: widget.capabilities,
+        embedded: true,
+        showHeader: showPageHeader,
+      ),
       P2WlanSection.settings => SettingsPage(
         settingsStore: widget.settingsStore,
         statusStore: widget.statusStore,
@@ -251,7 +259,10 @@ class _P2WlanShellState extends State<P2WlanShell> {
           : _sectionFadeDuration,
       switchInCurve: Curves.easeOut,
       switchOutCurve: Curves.easeIn,
-      child: KeyedSubtree(key: ValueKey(_section), child: page),
+      child: KeyedSubtree(
+        key: ValueKey((_section, widget.statusStore.sessionRevision)),
+        child: page,
+      ),
     );
   }
 
@@ -405,7 +416,7 @@ bool get _canDragWindowFromAppBar {
 }
 
 /// Compact mobile only: low-weight overflow menu in the top bar. Keeps the
-/// shell quiet — the bottom bar stays at exactly three destinations and
+/// shell quiet — the bottom bar stays at exactly four destinations and
 /// troubleshooting is entered from here and from Home's issue banner.
 class _MobileShellMenu extends StatelessWidget {
   const _MobileShellMenu({

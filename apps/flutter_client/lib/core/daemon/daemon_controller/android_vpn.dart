@@ -29,7 +29,7 @@ extension DaemonControllerAndroidVpn on DaemonController {
     // across hot restart, debug/release installs, and stale foreground
     // services holding the previous TUN fd.
     final stopped = await _stopAndroidVpn();
-    if (!stopped.ok && await _androidNativeRunning()) {
+    if (!stopped.ok) {
       return DaemonCommandResult(
         ok: false,
         message: '检测到旧的 Android VPN 实例，但在启动新实例前无法停止：${stopped.message}',
@@ -121,8 +121,8 @@ extension DaemonControllerAndroidVpn on DaemonController {
           : settings.networkId.trim(),
       'auth_token': settings.authToken,
       'device_name': settings.deviceName,
-      if (isRoomNetwork(settings.networkId))
-        'profile_id': roomProfileId(settings),
+      if (!settings.manualMode && settings.authToken.trim().isNotEmpty)
+        'profile_id': managedNetworkProfileId(settings),
       'virtual_ip': settings.virtualIp,
       'manual_mode': settings.manualMode,
       'overlay_cidr': settings.overlayCidr,
@@ -137,9 +137,17 @@ extension DaemonControllerAndroidVpn on DaemonController {
     });
   }
 
+  @visibleForTesting
+  Future<DaemonCommandResult> stopAndroidVpnForTesting() => _stopAndroidVpn();
+
   Future<DaemonCommandResult> _stopAndroidVpn() async {
     try {
-      await androidVpnTransport.stop();
+      if (!await androidVpnTransport.stop()) {
+        return const DaemonCommandResult(
+          ok: false,
+          message: 'Android VPN 未接受停止请求。',
+        );
+      }
     } on PlatformException catch (error) {
       return DaemonCommandResult(
         ok: false,
@@ -151,7 +159,15 @@ extension DaemonControllerAndroidVpn on DaemonController {
 
     final deadline = DateTime.now().add(const Duration(seconds: 10));
     while (DateTime.now().isBefore(deadline)) {
-      final nativeRunning = await _androidNativeRunning();
+      final bool nativeRunning;
+      try {
+        nativeRunning = (await androidVpnTransport.status()).nativeRunning;
+      } catch (_) {
+        return const DaemonCommandResult(
+          ok: false,
+          message: '无法确认旧 Android VPN 已停止，账号没有切换。',
+        );
+      }
       // The native runtime is the owner of the detached VPN fd. Once it has
       // stopped, a briefly stale HTTP health response must not block a new
       // VpnService start; requiring both states caused needless 10-second

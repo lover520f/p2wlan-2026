@@ -19,9 +19,13 @@ class RoomsPage extends StatefulWidget {
     this.initialInvitation,
     this.api,
     this.capabilities,
+    this.embedded = false,
+    this.showHeader = true,
   });
   final SettingsStore settingsStore;
   final StatusStore statusStore;
+  final bool embedded;
+  final bool showHeader;
   final Uri? initialInvitation;
   final RoomApi? api;
   final PlatformCapabilities? capabilities;
@@ -37,6 +41,7 @@ class _RoomsPageState extends State<RoomsPage> {
   List<Map<String, dynamic>> _invites = [];
   String? _selectedId;
   String? _error;
+  String? _operationError;
   bool _loading = true;
   bool _busy = false;
   bool _refreshing = false;
@@ -135,7 +140,7 @@ class _RoomsPageState extends State<RoomsPage> {
         _error = null;
       });
     } catch (error) {
-      if (mounted && generation == _generation) {
+      if (mounted && generation == _generation && _sameSession) {
         setState(() => _error = _message(error));
       }
     } finally {
@@ -146,6 +151,21 @@ class _RoomsPageState extends State<RoomsPage> {
     }
   }
 
+  String _memberLabel(String id) {
+    if (id == _apiInstance?.userId) return '我';
+    return id.isEmpty ? '成员' : '账号 ${id.length > 8 ? id.substring(0, 8) : id}';
+  }
+
+  String _connectionLabel(ParallelRoomSession? session) =>
+      switch (session?.phase) {
+        RoomConnectionPhase.starting => '连接中',
+        RoomConnectionPhase.running => '已连接',
+        RoomConnectionPhase.stopping => '断开中',
+        RoomConnectionPhase.unavailable => '连接不可用',
+        RoomConnectionPhase.failed => '需处理',
+        null => '未连接',
+      };
+
   String _message(Object error) =>
       error is RoomException ? error.message : '操作未完成，请检查连接后重试';
 
@@ -155,19 +175,21 @@ class _RoomsPageState extends State<RoomsPage> {
   }) async {
     if (_busy || !mounted) return;
     if (!_sameSession) {
-      setState(() => _error = '登录账号或服务器已变化，请返回后重新打开房间');
+      setState(() => _operationError = '登录账号或服务器已变化，请重新登录。');
       return;
     }
     _generation++;
     setState(() {
       _busy = true;
-      _error = null;
+      _operationError = null;
     });
     try {
       await operation();
-      if (mounted && success != null) _notify(success);
+      if (mounted && _sameSession && success != null) _notify(success);
     } catch (error) {
-      if (mounted) setState(() => _error = _message(error));
+      if (mounted && _sameSession) {
+        setState(() => _operationError = _message(error));
+      }
       return;
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -269,7 +291,7 @@ class _RoomsPageState extends State<RoomsPage> {
     if (values == null || !mounted) return;
     await _run(() async {
       _selectedId = (await _api.join(values[0].trim(), password: values[1])).id;
-    }, success: '已加入房间');
+    }, success: '已加入房间，点击“连接”开始互联');
   }
 
   Future<void> _joinWithLink([String initial = '']) async {
@@ -294,7 +316,7 @@ class _RoomsPageState extends State<RoomsPage> {
     await _run(() async {
       final invite = RoomInvitation.parse(values[0], _api.server);
       _selectedId = (await _api.join(invite.code, invitation: invite.token)).id;
-    }, success: '已通过邀请加入房间');
+    }, success: '已加入房间，点击“连接”开始互联');
   }
 
   Future<void> _connect(FriendRoom? room) async {
@@ -311,7 +333,7 @@ class _RoomsPageState extends State<RoomsPage> {
         if (!mounted || !_sameSession) return;
         final result = await _parallel.connect(room);
         if (!result.ok) throw RoomException(result.message);
-      }, success: '房间已独立启动，不影响其他并行房间');
+      }, success: '已连接房间');
       return;
     }
     final name = room?.name ?? '个人网络';
@@ -539,34 +561,41 @@ class _RoomsPageState extends State<RoomsPage> {
     }, success: room.isOwner ? '房间已解散' : '已退出房间');
   }
 
+  Widget _surfaceCard({required Widget child, bool selected = false}) {
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 8),
+      color: selected ? colors.secondaryContainer : colors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: selected ? colors.primary : colors.outlineVariant,
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: child,
+    );
+  }
+
   Widget _roomList() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      Card(
-        child: ListTile(
-          leading: const Icon(Icons.devices_rounded),
-          title: const Text('个人网络'),
-          subtitle: const Text('保持原有设备与 IP，不向房间公开'),
-          trailing: _canConnect
-              ? IconButton(
-                  tooltip: '返回个人网络',
-                  onPressed: _busy ? null : () => _connect(null),
-                  icon: const Icon(Icons.login_rounded),
-                )
-              : null,
+      Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Text(
+          '我的房间 · ${_rooms.length}',
+          style: Theme.of(context).textTheme.titleMedium,
         ),
       ),
-      const SizedBox(height: 12),
       if (_rooms.isEmpty && !_loading)
         const Padding(
           padding: EdgeInsets.all(24),
-          child: Text(
-            '还没有加入房间\n创建一个房间，或向好友索取房间号与密码。',
-            textAlign: TextAlign.center,
-          ),
+          child: Text('还没有房间\n创建一个，或向好友索取房间号与密码。', textAlign: TextAlign.center),
         ),
       for (final room in _rooms)
-        Card(
+        _surfaceCard(
+          selected: room.id == _selectedId,
           child: ListTile(
             selected: room.id == _selectedId,
             leading: Icon(
@@ -579,7 +608,7 @@ class _RoomsPageState extends State<RoomsPage> {
             ),
             subtitle: Text(
               '${room.code} · ${room.isOwner ? '房主' : '成员'}\n${room.cidr}'
-              '${_parallel.session(room.id) == null ? '' : ' · 独立运行时'}',
+              ' · ${_connectionLabel(_parallel.session(room.id))}',
             ),
             isThreeLine: true,
             trailing: room.locked
@@ -624,7 +653,7 @@ class _RoomsPageState extends State<RoomsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Card(
+        _surfaceCard(
           child: Padding(
             padding: const EdgeInsets.all(20),
             child: Column(
@@ -658,7 +687,7 @@ class _RoomsPageState extends State<RoomsPage> {
                               ? '断开此房间'
                               : active
                               ? (_parallel.supported ? '迁移为并行连接' : '重新连接房间')
-                              : '连接房间网络',
+                              : '连接',
                         ),
                       ),
                     OutlinedButton.icon(
@@ -686,80 +715,26 @@ class _RoomsPageState extends State<RoomsPage> {
                 const SizedBox(height: 12),
                 Text(
                   connection != null
-                      ? '${connection.phase.name} · ${connection.snapshot?.virtualIp ?? '等待地址'}'
-                            '\n${connection.message ?? '独立网卡、连接及路由；断开本房间不会停止其他房间。'}'
+                      ? '${_connectionLabel(connection)} · 本机 IP ${connection.snapshot?.virtualIp ?? '待分配'}'
                       : active
-                      ? (_parallel.supported
-                            ? '这是旧的单活动网络，连接后迁移为独立运行时。'
-                            : '这是当前选择的单活动网络。')
-                      : _parallel.supported
-                      ? '点击连接会独立注册本设备，并与其他已连接房间同时运行。'
-                      : '当前平台仍为单活动网络，不支持多个房间同时联网。',
+                      ? '此房间正在使用旧连接，重新连接后可与其他房间并行。'
+                      : '已加入，尚未连接。连接后可访问此房间内的设备。',
                 ),
+                if (connection?.message != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      connection!.message!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
                 if (!_canConnect) const Text('此平台仅支持房间管理，不能创建本地虚拟网卡。'),
-                if (room.isOwner) ...[
-                  const Divider(height: 28),
-                  SwitchListTile.adaptive(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('锁定新成员加入'),
-                    subtitle: const Text('锁定后密码和邀请都无法添加新成员'),
-                    value: room.locked,
-                    onChanged: _busy
-                        ? null
-                        : (value) => _run(() async {
-                            await _api.request(
-                              'PATCH',
-                              [room.id],
-                              {'join_locked': value},
-                            );
-                          }),
-                  ),
-                  Wrap(
-                    spacing: 8,
-                    children: [
-                      TextButton(
-                        onPressed: _busy ? null : () => _edit(room, false),
-                        child: const Text('重命名'),
-                      ),
-                      TextButton(
-                        onPressed: _busy ? null : () => _edit(room, true),
-                        child: const Text('更改密码'),
-                      ),
-                    ],
-                  ),
-                ],
               ],
             ),
           ),
         ),
-        const SizedBox(height: 12),
-        Text(
-          '成员 · ${roster.members.length}',
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
-        for (final member in roster.members)
-          Card(
-            child: ListTile(
-              leading: Icon(
-                member['role'] == 'owner'
-                    ? Icons.star_outline_rounded
-                    : Icons.person_outline_rounded,
-              ),
-              title: SelectableText(member['user_id'] as String? ?? ''),
-              subtitle: Text(member['role'] == 'owner' ? '房主' : '成员'),
-              trailing: room.isOwner && member['role'] != 'owner'
-                  ? PopupMenuButton<bool>(
-                      enabled: !_busy,
-                      onSelected: (ban) =>
-                          _removeMember(room, member['user_id'] as String, ban),
-                      itemBuilder: (_) => const [
-                        PopupMenuItem(value: false, child: Text('移除成员')),
-                        PopupMenuItem(value: true, child: Text('封禁成员')),
-                      ],
-                    )
-                  : null,
-            ),
-          ),
         const SizedBox(height: 16),
         Text(
           '房间设备 · ${roster.devices.length}',
@@ -771,7 +746,7 @@ class _RoomsPageState extends State<RoomsPage> {
             child: Text('连接房间网络后，本设备才会出现在这里。'),
           ),
         for (final device in roster.devices)
-          Card(
+          _surfaceCard(
             child: ListTile(
               leading: Icon(
                 device['online'] == true
@@ -780,7 +755,7 @@ class _RoomsPageState extends State<RoomsPage> {
               ),
               title: Text(device['device_name'] as String? ?? '设备'),
               subtitle: SelectableText(
-                '${device['virtual_ip'] ?? ''} · ${device['online'] == true ? '在线' : '离线'}\n${device['user_id'] ?? ''}',
+                '${device['virtual_ip'] ?? ''} · ${device['online'] == true ? '在线' : '离线'}\n${_memberLabel(device['user_id'] as String? ?? '')}',
               ),
               isThreeLine: true,
               trailing: room.isOwner
@@ -797,6 +772,80 @@ class _RoomsPageState extends State<RoomsPage> {
                   : null,
             ),
           ),
+        const SizedBox(height: 12),
+        ExpansionTile(
+          title: Text('成员 · ${roster.members.length}'),
+          children: [
+            for (final member in roster.members)
+              _surfaceCard(
+                child: ListTile(
+                  leading: Icon(
+                    member['role'] == 'owner'
+                        ? Icons.star_outline_rounded
+                        : Icons.person_outline_rounded,
+                  ),
+                  title: Text(_memberLabel(member['user_id'] as String? ?? '')),
+                  subtitle: Text(member['role'] == 'owner' ? '房主' : '成员'),
+                  trailing: room.isOwner && member['role'] != 'owner'
+                      ? PopupMenuButton<bool>(
+                          enabled: !_busy,
+                          onSelected: (ban) => _removeMember(
+                            room,
+                            member['user_id'] as String,
+                            ban,
+                          ),
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(value: false, child: Text('移除成员')),
+                            PopupMenuItem(value: true, child: Text('封禁成员')),
+                          ],
+                        )
+                      : null,
+                ),
+              ),
+          ],
+        ),
+        if (room.isOwner)
+          ExpansionTile(
+            title: const Text('房间设置'),
+            children: [
+              ...[
+                const Divider(height: 28),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('锁定新成员加入'),
+                  subtitle: const Text('锁定后密码和邀请都无法添加新成员'),
+                  value: room.locked,
+                  onChanged: _busy
+                      ? null
+                      : (value) => _run(() async {
+                          await _api.request(
+                            'PATCH',
+                            [room.id],
+                            {'join_locked': value},
+                          );
+                        }),
+                ),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    TextButton(
+                      onPressed: _busy ? null : () => _edit(room, false),
+                      child: const Text('重命名'),
+                    ),
+                    TextButton(
+                      onPressed: _busy ? null : () => _edit(room, true),
+                      child: const Text('更改密码'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _busy ? null : () => _leave(room),
+                      icon: const Icon(Icons.delete_outline),
+                      label: const Text('解散房间'),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
         if (room.isOwner) ...[
           const SizedBox(height: 16),
           Text('邀请管理', style: Theme.of(context).textTheme.titleMedium),
@@ -806,7 +855,7 @@ class _RoomsPageState extends State<RoomsPage> {
               child: Text('尚未生成邀请；已生成链接的凭证不会再次返回。'),
             ),
           for (final invite in _invites)
-            Card(
+            _surfaceCard(
               child: ListTile(
                 title: Text('已使用 ${invite['uses']} / ${invite['max_uses']} 次'),
                 subtitle: Text(
@@ -836,7 +885,7 @@ class _RoomsPageState extends State<RoomsPage> {
             const SizedBox(height: 16),
             Text('封禁账号', style: Theme.of(context).textTheme.titleMedium),
             for (final user in roster.bannedUserIds)
-              Card(
+              _surfaceCard(
                 child: ListTile(
                   title: SelectableText(user),
                   trailing: TextButton(
@@ -861,17 +910,18 @@ class _RoomsPageState extends State<RoomsPage> {
           ],
         ],
         const SizedBox(height: 24),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            onPressed: _busy ? null : () => _leave(room),
-            icon: const Icon(Icons.exit_to_app_rounded),
-            label: Text(room.isOwner ? '解散房间' : '退出房间'),
+        if (!room.isOwner)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _busy ? null : () => _leave(room),
+              icon: const Icon(Icons.exit_to_app_rounded),
+              label: const Text('退出房间'),
+            ),
           ),
-        ),
         const Padding(
           padding: EdgeInsets.symmetric(vertical: 12),
-          child: Text('房间设备只允许当前房间内通信，不承担房间之间的转发。退出、封禁或权限过期后，旧数据面授权最多保留 30 秒。'),
+          child: Text('断开只停止本机连接；退出房间会移除你的成员资格。'),
         ),
       ],
     );
@@ -881,16 +931,18 @@ class _RoomsPageState extends State<RoomsPage> {
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.settingsStore,
     builder: (context, _) => Scaffold(
-      appBar: AppBar(
-        title: const Text('好友房间'),
-        actions: [
-          IconButton(
-            tooltip: '刷新房间',
-            onPressed: _busy ? null : () => _refresh(),
-            icon: const Icon(Icons.refresh_rounded),
-          ),
-        ],
-      ),
+      appBar: widget.embedded
+          ? null
+          : AppBar(
+              title: const Text('互联'),
+              actions: [
+                IconButton(
+                  tooltip: '刷新房间',
+                  onPressed: _busy ? null : () => _refresh(),
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+              ],
+            ),
       body: SafeArea(
         child: RefreshIndicator(
           onRefresh: _refresh,
@@ -903,15 +955,16 @@ class _RoomsPageState extends State<RoomsPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Text(
-                        '和好友组成独立的局域网',
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
+                      if (widget.showHeader)
+                        Text(
+                          '互联',
+                          style: Theme.of(context).textTheme.headlineSmall,
+                        ),
                       const SizedBox(height: 8),
                       Text(
                         _parallel.supported
-                            ? '每人创建一个房间，可同时连接多个房间；个人网络配置保持独立。'
-                            : '每人创建一个房间，可以加入多个房间；此平台目前仍为单活动网络。',
+                            ? '和好友加入同一房间，连接后即可互访。可同时连接多个房间。'
+                            : '和好友加入同一房间。此平台目前仍为单活动网络。',
                       ),
                       const SizedBox(height: 20),
                       Wrap(
@@ -929,12 +982,12 @@ class _RoomsPageState extends State<RoomsPage> {
                           OutlinedButton.icon(
                             onPressed: _busy ? null : _join,
                             icon: const Icon(Icons.meeting_room_outlined),
-                            label: const Text('房间号加入'),
+                            label: const Text('加入房间'),
                           ),
                           OutlinedButton.icon(
                             onPressed: _busy ? null : () => _joinWithLink(),
                             icon: const Icon(Icons.link_rounded),
-                            label: const Text('邀请链接加入'),
+                            label: const Text('粘贴邀请'),
                           ),
                         ],
                       ),
@@ -943,15 +996,35 @@ class _RoomsPageState extends State<RoomsPage> {
                           padding: EdgeInsets.symmetric(vertical: 16),
                           child: LinearProgressIndicator(),
                         ),
-                      if (_error != null)
+                      if (_operationError != null || _error != null)
                         Padding(
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           child: Semantics(
                             liveRegion: true,
-                            child: Text(
-                              _error!,
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.error,
+                            child: Card(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .errorContainer,
+                              child: Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Icon(Icons.error_outline),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Text(_operationError ?? _error!),
+                                    ),
+                                    IconButton(
+                                      tooltip: '关闭提示',
+                                      onPressed: () => setState(() {
+                                        _operationError = null;
+                                        _error = null;
+                                      }),
+                                      icon: const Icon(Icons.close),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
