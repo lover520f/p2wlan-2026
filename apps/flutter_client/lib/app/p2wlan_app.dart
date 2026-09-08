@@ -153,6 +153,10 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
     // 127.0.0.1:39277 would manufacture a "local service unavailable" state
     // on every Android/iOS launch.
     final canPollLocalDaemon = _capabilities.canActAsLocalVpnNode;
+    if (widget.autoStartPolling && _authenticated) {
+      await _statusStore.parallelRooms.credentialsChanged();
+      unawaited(_statusStore.parallelRooms.recoverJoinedRooms());
+    }
     if (widget.autoStartPolling && canPollLocalDaemon) {
       _statusStore.startPolling();
     } else if (widget.initialRefresh && canPollLocalDaemon) {
@@ -202,7 +206,8 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
 
   Future<void> _logout() async {
     final settings = _settingsStore.settings;
-    if (isRoomNetwork(settings.networkId) &&
+    if ((isRoomNetwork(settings.networkId) ||
+            _statusStore.parallelRooms.hasSessions) &&
         _capabilities.canActAsLocalVpnNode) {
       final stopped = await _statusStore.stopDaemon();
       if (!stopped.ok) {

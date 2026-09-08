@@ -10,6 +10,7 @@ import '../core/daemon/daemon_controller.dart';
 import '../core/models/diagnostics_models.dart';
 import '../core/state/settings_store.dart';
 import '../core/state/status_store.dart';
+import '../core/rooms/parallel_rooms.dart';
 import '../shared/formatters.dart';
 import 'app_constants.dart';
 import 'app_strings.dart';
@@ -86,6 +87,7 @@ class DesktopTrayController with TrayListener, WindowListener {
     windowManager.addListener(this);
     settingsStore.addListener(_scheduleMenuUpdate);
     statusStore.addListener(_scheduleMenuUpdate);
+    statusStore.parallelRooms.addListener(_scheduleMenuUpdate);
     _trace('initialize.listeners-added');
 
     try {
@@ -124,6 +126,7 @@ class DesktopTrayController with TrayListener, WindowListener {
     _menuUpdateRequested = false;
     settingsStore.removeListener(_scheduleMenuUpdate);
     statusStore.removeListener(_scheduleMenuUpdate);
+    statusStore.parallelRooms.removeListener(_scheduleMenuUpdate);
     windowManager.removeListener(this);
     trayManager.removeListener(this);
     final pendingUpdate = _menuUpdateInFlight;
@@ -349,8 +352,9 @@ class DesktopTrayController with TrayListener, WindowListener {
   Menu buildMenuForTesting() {
     final strings = AppStrings.fromCode(settingsStore.settings.languageCode);
     final snapshot = statusStore.snapshot;
-    final daemonReachable = statusStore.daemonReachable;
-    final busy = statusStore.daemonBusy;
+    final daemonReachable =
+        statusStore.daemonReachable || statusStore.parallelRooms.hasSessions;
+    final busy = statusStore.daemonBusy || statusStore.parallelRooms.busy;
     final statusLabel = _statusLabel(strings);
     final networkLabel = _networkLabel(strings, snapshot);
     final primaryControlLabel = busy
@@ -382,6 +386,22 @@ class DesktopTrayController with TrayListener, WindowListener {
         MenuItem.separator(),
         MenuItem(label: strings.devices, disabled: true),
         ..._deviceItems(strings, snapshot),
+        for (final entry in statusStore.parallelRooms.sessions.values)
+          MenuItem(
+            label:
+                '${entry.plan.room.name} · ${entry.snapshot?.virtualIp ?? entry.plan.room.cidr} · ${entry.phase.name}',
+            submenu: Menu(
+              items: [
+                MenuItem(
+                  label: strings.isZh ? '断开此房间' : 'Disconnect this room',
+                  disabled: busy,
+                  onClick: (_) => unawaited(
+                    statusStore.parallelRooms.disconnect(entry.plan.room.id),
+                  ),
+                ),
+              ],
+            ),
+          ),
         MenuItem.separator(),
         MenuItem(
           label: strings.openLogs,
@@ -396,7 +416,18 @@ class DesktopTrayController with TrayListener, WindowListener {
   }
 
   String _statusLabel(AppStrings strings) {
-    if (statusStore.daemonBusy) return strings.daemonWorking;
+    if (statusStore.daemonBusy || statusStore.parallelRooms.busy) {
+      return strings.daemonWorking;
+    }
+    final runningRooms = statusStore.parallelRooms.sessions.values
+        .where((entry) => entry.phase == RoomConnectionPhase.running)
+        .length;
+    if (runningRooms > 0) {
+      return strings.isZh
+          ? '$runningRooms 个并行房间已连接'
+          : '$runningRooms parallel rooms connected';
+    }
+    if (statusStore.parallelRooms.hasSessions) return strings.degraded;
     if (statusStore.snapshotStale) return strings.stale;
     if (!statusStore.daemonReachable) return strings.offline;
     final health = statusStore.snapshot?.health.status;
@@ -409,7 +440,18 @@ class DesktopTrayController with TrayListener, WindowListener {
     if (!Platform.isMacOS) {
       return Platform.isWindows ? _windowsTrayIconAsset : _linuxTrayIconAsset;
     }
-    if (statusStore.daemonBusy) return _macosBusyIconAsset;
+    if (statusStore.daemonBusy || statusStore.parallelRooms.busy) {
+      return _macosBusyIconAsset;
+    }
+    if (statusStore.parallelRooms.hasSessions) {
+      final entries = statusStore.parallelRooms.sessions.values;
+      return entries.isNotEmpty &&
+              entries.every(
+                (entry) => entry.phase == RoomConnectionPhase.running,
+              )
+          ? _macosOnIconAsset
+          : _macosAttentionIconAsset;
+    }
     if (statusStore.snapshotStale) return _macosAttentionIconAsset;
     if (!statusStore.daemonReachable) return _macosOffIconAsset;
     final health = statusStore.snapshot?.health.status.toLowerCase();
@@ -584,12 +626,16 @@ class DesktopTrayController with TrayListener, WindowListener {
     await _waitForExternalDaemonCommand();
     final existing = _stopDaemonFuture;
     if (existing != null) return existing;
-    if (!statusStore.daemonBusy && !statusStore.daemonReachable) {
+    if (!statusStore.daemonBusy &&
+        !statusStore.daemonReachable &&
+        !statusStore.parallelRooms.hasSessions) {
       return _alreadyStoppedResult;
     }
 
     final result = await _stopDaemon();
-    if (!result.ok && !statusStore.daemonReachable) {
+    if (!result.ok &&
+        !statusStore.daemonReachable &&
+        !statusStore.parallelRooms.hasSessions) {
       return _alreadyStoppedResult;
     }
     return result;

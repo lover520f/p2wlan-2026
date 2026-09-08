@@ -84,3 +84,27 @@ Future<String?> readDiagnosticsAuthToken() async {
     return null;
   }
 }
+
+Directory roomRuntimeDirectory(String profileId) {
+  if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(profileId)) {
+    throw ArgumentError.value(profileId, 'profileId');
+  }
+  return Directory(
+    '${defaultP2WlanLogDir().path}${Platform.pathSeparator}rooms'
+    '${Platform.pathSeparator}$profileId',
+  );
+}
+
+Future<String?> readRoomDiagnosticsAuthToken(String profileId) async {
+  final file = File(
+    '${roomRuntimeDirectory(profileId).path}${Platform.pathSeparator}'
+    'p2wlan-daemon.diag-auth',
+  );
+  try {
+    if (!await file.exists() || await file.length() > 4096) return null;
+    final value = (await file.readAsString()).trim();
+    return value.isEmpty ? null : value;
+  } on FileSystemException {
+    return null;
+  }
+}

@@ -12,8 +12,11 @@ import '../capabilities/permission_preflight.dart';
 import '../models/diagnostics_models.dart';
 import '../platform/android_platform.dart';
 import '../security/redactor.dart';
+import 'diagnostics_auth.dart';
+import 'runtime_identity.dart';
 import '../rooms/room_api.dart';
 import '../rooms/room_profiles.dart';
+import '../rooms/route_inventory.dart';
 
 part 'daemon_controller/process_control.dart';
 part 'daemon_controller/elevation.dart';
@@ -22,6 +25,7 @@ part 'daemon_controller/launch_token.dart';
 part 'daemon_controller/pids.dart';
 part 'daemon_controller/android_vpn.dart';
 part 'daemon_controller/startup_trace.dart';
+part 'daemon_controller/room_routes.dart';
 
 /// Injectable Android platform boundary. Production uses the
 /// [MethodChannelAndroidVpnTransport]; tests can provide a fake without
@@ -150,7 +154,13 @@ class DaemonController {
     this.readMacosAdminPassword,
     this.saveMacosAdminPassword,
     this.clearMacosAdminPassword,
-  });
+    this.roomInstanceId,
+  }) {
+    if (roomInstanceId != null &&
+        !RegExp(r'^[a-f0-9]{64}$').hasMatch(roomInstanceId!)) {
+      throw ArgumentError.value(roomInstanceId, 'roomInstanceId');
+    }
+  }
 
   static const daemonBinaryName = 'p2wlan-daemon';
   static const envDaemonBin = 'P2WLAN_DAEMON_BIN';
@@ -163,6 +173,9 @@ class DaemonController {
   static const _gracefulShutdownTimeout = Duration(seconds: 12);
 
   final DiagnosticsApi _diagnosticsApi;
+  final String? roomInstanceId;
+  int? _authenticatedProcessId;
+  int? _launchedProcessId;
   final AndroidVpnTransport androidVpnTransport;
 
   /// Returns the additive Android lifecycle identity when running on Android.
@@ -191,6 +204,16 @@ class DaemonController {
       '${_defaultLogDir().path}${Platform.pathSeparator}p2wlan-daemon.log';
 
   Future<DaemonCommandResult> start(AppSettings settings) async {
+    if (roomInstanceId != null) {
+      if (Platform.isAndroid ||
+          Platform.isIOS ||
+          roomProfileId(settings) != roomInstanceId) {
+        return const DaemonCommandResult(
+          ok: false,
+          message: '房间运行时身份或平台不匹配，已拒绝启动。',
+        );
+      }
+    }
     if (Platform.isAndroid) return _startAndroidVpn(settings);
     _lastDaemonBuildInfo = null;
     final startupTrace = Platform.isWindows

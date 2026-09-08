@@ -65,7 +65,10 @@ fn windows_remove_stale_managed_routes(
 #[cfg(any(target_os = "windows", test))]
 fn windows_is_managed_interface_alias(alias: &str) -> bool {
     let alias = alias.trim().to_ascii_lowercase();
-    alias == "p2wlan" || alias.starts_with("p2wlan-") || alias.starts_with("p2pnet")
+    alias == "p2wlan"
+        || alias.starts_with("p2wlan-")
+        || alias.starts_with("p2pnet")
+        || alias.starts_with("p2r")
 }
 
 #[cfg(target_os = "windows")]

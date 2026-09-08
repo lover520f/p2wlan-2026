@@ -1,0 +1,94 @@
+name: Parallel Rooms
+
+on:
+  push:
+    branches: [main, feat/parallel-rooms-20260908]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parallel-rooms-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle:
+    name: Parallel room lifecycle (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version-file: .fvmrc
+          cache: true
+      - name: Resolve dependencies
+        working-directory: apps/flutter_client
+        run: flutter pub get
+      - name: Format check
+        working-directory: apps/flutter_client
+        run: dart format --output=none --set-exit-if-changed .
+      - name: Analyze
+        working-directory: apps/flutter_client
+        run: flutter analyze
+      - name: Parallel lifecycle and native route inventory tests
+        working-directory: apps/flutter_client
+        run: flutter test test/parallel_rooms_test.dart test/room_route_inventory_test.dart
+
+  linux_live:
+    name: Parallel rooms real TUN (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Install namespace tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iputils-ping
+          sudo modprobe tun
+      - name: Build production daemon and control
+        run: |
+          cargo build --locked -p p2wlan-daemon
+          (cd server && go build -o ../target/debug/p2wlan-control .)
+      - name: Real TUN parallel rooms and revocation
+        run: |
+          sudo python3 scripts/parallel-rooms/linux-netns.py \
+            --daemon target/debug/p2wlan-daemon \
+            --control target/debug/p2wlan-control \
+            --head "$(git rev-parse HEAD)" \
+            --report "$RUNNER_TEMP/parallel-rooms-evidence.json"
+      - name: Upload non-secret network evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: parallel-rooms-live-${{ github.sha }}
+          path: ${{ runner.temp }}/parallel-rooms-evidence.json
+          if-no-files-found: error
+          retention-days: 7
+
+  required:
+    name: Parallel Rooms Required
+    if: always()
+    needs: [lifecycle, linux_live]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce parallel room contracts
+        env:
+          LIFECYCLE_RESULT: ${{ needs.lifecycle.result }}
+          LINUX_LIVE_RESULT: ${{ needs.linux_live.result }}
+        run: |
+          test "$LIFECYCLE_RESULT" = success
+          test "$LINUX_LIVE_RESULT" = success

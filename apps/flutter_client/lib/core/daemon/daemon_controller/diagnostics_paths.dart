@@ -397,6 +397,11 @@ extension DaemonControllerDiagnosticsPaths on DaemonController {
   }
 
   Directory _defaultLogDir() {
+    final instance = roomInstanceId;
+    return instance == null ? _baseLogDir() : roomRuntimeDirectory(instance);
+  }
+
+  Directory _baseLogDir() {
     if (Platform.isAndroid) {
       final cachedPath = cachedApplicationSupportDirectoryPath;
       if (cachedPath != null && cachedPath.isNotEmpty) {
