@@ -10,6 +10,64 @@ import 'package:p2wlan_flutter_client/core/security/secure_token_repository.dart
 import 'package:p2wlan_flutter_client/core/state/settings_store.dart';
 
 void main() {
+  test(
+    'profile username reads and writes authenticated account data',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final api = ControlApi();
+      addTearDown(api.close);
+      addTearDown(() => server.close(force: true));
+      final requests = <String>[];
+      var name = '小林';
+      server.listen((request) async {
+        expect(request.uri.path, '/api/v1/profile');
+        expect(
+          request.headers.value(HttpHeaders.authorizationHeader),
+          'Bearer test-account',
+        );
+        requests.add(request.method);
+        if (request.method == 'PATCH') {
+          final body =
+              jsonDecode(await utf8.decoder.bind(request).join()) as Map;
+          expect(body.keys, ['username']);
+          name = body['username'] as String;
+        }
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode({
+            'user': {'username': name},
+          }),
+        );
+        await request.response.close();
+      });
+      final url = 'http://127.0.0.1:${server.port}';
+      expect(
+        await api.profileUsername(
+          controlServer: url,
+          authToken: 'test-account',
+        ),
+        '小林',
+      );
+      expect(
+        await api.profileUsername(
+          controlServer: url,
+          authToken: 'test-account',
+          username: ' 阿明 ',
+        ),
+        '阿明',
+      );
+      await expectLater(
+        api.profileUsername(
+          controlServer: url,
+          authToken: 'test-account',
+          username: '  ',
+        ),
+        throwsA(isA<ControlApiException>()),
+      );
+      expect(requests, ['GET', 'PATCH']);
+    },
+  );
+
   test('default control server matches the desktop client default', () {
     expect(defaultControlServer, 'http://47.109.40.237:18080');
   });

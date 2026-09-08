@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'username_settings.dart';
+
 import '../../app/app_constants.dart';
 import '../../app/app_strings.dart';
 import '../../app/app_tokens.dart';

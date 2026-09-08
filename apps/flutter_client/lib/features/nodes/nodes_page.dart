@@ -501,7 +501,7 @@ class _NodesPageState extends State<NodesPage> {
     }
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => _PeerDetailsDialog(
+      builder: (dialogContext) => DeviceDetailsDialog(
         peer: peer,
         strings: stringsOf(context),
         statusStore: widget.statusStore,

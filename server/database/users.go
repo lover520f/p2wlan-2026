@@ -1,14 +1,19 @@
 package database
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ---- User operations ----
 
 // User represents a registered user.
 type User struct {
+	Username     string `json:"username"`
 	ID           string `json:"id"`
 	Email        string `json:"email"`
 	PasswordHash string `json:"-"`
@@ -46,10 +51,41 @@ func (db *DB) CreateUser(email, passwordHash string) (*User, error) {
 // GetUserByEmail looks up a user by email.
 func (db *DB) GetUserByEmail(email string) (*User, error) {
 	var u User
-	err := db.QueryRow(`SELECT id, email, password_hash, created_at FROM users WHERE email = ?`, email).
-		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+	err := db.QueryRow(`SELECT id, email, password_hash, created_at, username FROM users WHERE email = ?`, email).
+		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.Username)
 	if err != nil {
 		return nil, err
 	}
 	return &u, nil
+}
+
+var ErrInvalidUsername = errors.New("username must contain 1–32 characters without control characters")
+
+func ValidUsername(name string) bool {
+	if !utf8.ValidString(name) || utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > 32 {
+		return false
+	}
+	for _, c := range name {
+		if unicode.IsControl(c) || unicode.In(c, unicode.Cf) {
+			return false
+		}
+	}
+	return strings.TrimSpace(name) == name
+}
+
+func (db *DB) GetUserByID(id string) (*User, error) {
+	var u User
+	err := db.QueryRow(`SELECT id, email, username, created_at FROM users WHERE id = ?`, id).Scan(&u.ID, &u.Email, &u.Username, &u.CreatedAt)
+	return &u, err
+}
+
+func (db *DB) UpdateUsername(id, name string) (*User, error) {
+	name = strings.TrimSpace(name)
+	if !ValidUsername(name) {
+		return nil, ErrInvalidUsername
+	}
+	if _, err := db.Exec(`UPDATE users SET username = ? WHERE id = ?`, name, id); err != nil {
+		return nil, err
+	}
+	return db.GetUserByID(id)
 }

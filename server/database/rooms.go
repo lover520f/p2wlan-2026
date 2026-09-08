@@ -33,6 +33,11 @@ const roomColumns = `r.network_id, r.room_code, n.name, n.cidr, r.owner_id, r.jo
 var roomDummyHash, _ = bcrypt.GenerateFromPassword([]byte("p2wlan-room-dummy-credential"), bcrypt.DefaultCost)
 
 type Room struct {
+	OwnerUsername     string   `json:"owner_username"`
+	MemberCount       int      `json:"member_count"`
+	OnlineMemberCount int      `json:"online_member_count"`
+	OwnerDeviceIPs    []string `json:"owner_device_ips"`
+
 	ID         string `json:"id"`
 	Code       string `json:"room_code"`
 	Name       string `json:"name"`
@@ -45,6 +50,7 @@ type Room struct {
 }
 
 type RoomMember struct {
+	Username  string `json:"username"`
 	UserID    string `json:"user_id"`
 	Role      string `json:"role"`
 	CreatedAt int64  `json:"created_at"`
@@ -279,7 +285,12 @@ func allocateRoomSubnet(tx *sql.Tx, now int64) (string, error) {
 }
 
 func (db *DB) ListRooms(userID string) ([]Room, error) {
-	rows, err := db.Query(`SELECT `+roomColumns+`, m.role FROM rooms r JOIN networks n ON n.id = r.network_id JOIN network_memberships m ON m.network_id = r.network_id WHERE m.user_id = ? ORDER BY CASE WHEN r.owner_id = ? THEN 0 ELSE 1 END, r.created_at, r.network_id`, userID, userID)
+	rows, err := db.Query(`SELECT `+roomColumns+`, m.role,
+ (SELECT username FROM users WHERE id = r.owner_id),
+ (SELECT COUNT(*) FROM network_memberships WHERE network_id = r.network_id),
+ (SELECT COUNT(DISTINCT d.user_id) FROM devices d JOIN network_memberships nm ON nm.user_id = d.user_id AND nm.network_id = d.network_id WHERE d.network_id = r.network_id AND d.online = 1 AND d.last_seen > 0 AND d.last_seen >= ?),
+ COALESCE((SELECT GROUP_CONCAT(virtual_ip) FROM devices WHERE network_id = r.network_id AND user_id = r.owner_id AND online = 1 AND last_seen > 0 AND last_seen >= ?), '')
+ FROM rooms r JOIN networks n ON n.id = r.network_id JOIN network_memberships m ON m.network_id = r.network_id WHERE m.user_id = ? ORDER BY CASE WHEN r.owner_id = ? THEN 0 ELSE 1 END, r.created_at, r.network_id`, time.Now().Unix()-DeviceOnlineTTL, time.Now().Unix()-DeviceOnlineTTL, userID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -287,8 +298,13 @@ func (db *DB) ListRooms(userID string) ([]Room, error) {
 	result := []Room{}
 	for rows.Next() {
 		var r Room
-		if err := rows.Scan(&r.ID, &r.Code, &r.Name, &r.CIDR, &r.OwnerID, &r.JoinLocked, &r.Revision, &r.CreatedAt, &r.Role); err != nil {
+		var ownerIPs string
+		if err := rows.Scan(&r.ID, &r.Code, &r.Name, &r.CIDR, &r.OwnerID, &r.JoinLocked, &r.Revision, &r.CreatedAt, &r.Role, &r.OwnerUsername, &r.MemberCount, &r.OnlineMemberCount, &ownerIPs); err != nil {
 			return nil, err
+		}
+		r.OwnerDeviceIPs = []string{}
+		if ownerIPs != "" {
+			r.OwnerDeviceIPs = strings.Split(ownerIPs, ",")
 		}
 		result = append(result, r)
 	}
@@ -313,13 +329,13 @@ func (db *DB) GetRoom(userID, roomID string) (*RoomDetails, error) {
 		room.Role = "owner"
 	}
 	out := &RoomDetails{Room: room, Members: []RoomMember{}, Devices: []Device{}, BannedUserIDs: []string{}}
-	rows, err := tx.Query(`SELECT user_id, role, created_at FROM network_memberships WHERE network_id = ? ORDER BY CASE WHEN role = 'owner' THEN 0 ELSE 1 END, created_at, user_id`, roomID)
+	rows, err := tx.Query(`SELECT m.user_id, m.role, m.created_at, u.username FROM network_memberships m JOIN users u ON u.id = m.user_id WHERE m.network_id = ? ORDER BY CASE WHEN m.role = 'owner' THEN 0 ELSE 1 END, m.created_at, m.user_id`, roomID)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var m RoomMember
-		if err := rows.Scan(&m.UserID, &m.Role, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.UserID, &m.Role, &m.CreatedAt, &m.Username); err != nil {
 			rows.Close()
 			return nil, err
 		}

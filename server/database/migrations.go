@@ -172,6 +172,7 @@ func migrate(db *sql.DB) error {
 	}
 	for _, column := range []struct{ table, column, definition string }{
 		{"devices", "ed25519_public_key", "TEXT NOT NULL DEFAULT ''"},
+		{"users", "username", "TEXT NOT NULL DEFAULT ''"},
 		{"devices", "app_version", "TEXT NOT NULL DEFAULT ''"},
 		{"devices", "relay_rtt_ms", "INTEGER"},
 		{"signals", "protocol_version", "INTEGER NOT NULL DEFAULT 1"},

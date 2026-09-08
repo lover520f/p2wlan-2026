@@ -17,7 +17,6 @@ import '../core/models/diagnostics_models.dart';
 import '../core/state/settings_store.dart';
 import '../core/state/status_store.dart';
 import '../features/auth/login_page.dart';
-import '../features/rooms/rooms_page.dart';
 import '../core/rooms/room_profiles.dart';
 import '../features/onboarding/onboarding_page.dart';
 import '../shared/widgets/windows_window_controls.dart';
@@ -170,6 +169,8 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
             'no-adapter-exit';
   }
 
+  Uri? _shellRoomLink;
+
   void _scheduleRoomLink() {
     if (!_ready ||
         !_authenticated ||
@@ -179,29 +180,22 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
       return;
     }
     _openingRoomLink = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final navigator = _navigatorKey.currentState;
-      if (!mounted || !_authenticated || navigator == null) {
-        _openingRoomLink = false;
-        return;
-      }
-      final invitation = _pendingRoomLink;
-      _pendingRoomLink = null;
-      try {
-        await navigator.push<void>(
-          MaterialPageRoute(
-            builder: (_) => RoomsPage(
-              settingsStore: _settingsStore,
-              statusStore: _statusStore,
-              initialInvitation: invitation,
-            ),
-          ),
-        );
-      } finally {
-        _openingRoomLink = false;
-        if (mounted) _scheduleRoomLink();
-      }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _shellRoomLink = _pendingRoomLink;
+        _pendingRoomLink = null;
+      });
     });
+  }
+
+  void _roomInvitationHandled() {
+    if (!mounted) return;
+    setState(() {
+      _shellRoomLink = null;
+      _openingRoomLink = false;
+    });
+    _scheduleRoomLink();
   }
 
   Future<void> _logout() async {
@@ -220,6 +214,8 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
       return;
     }
     _pendingRoomLink = null;
+    _shellRoomLink = null;
+    _openingRoomLink = false;
     _navigatorKey.currentState?.popUntil((route) => route.isFirst);
     if (mounted) {
       setState(() {
@@ -296,6 +292,8 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
                           },
                         )
                       : P2WlanShell(
+                          roomInvitation: _shellRoomLink,
+                          onRoomInvitationHandled: _roomInvitationHandled,
                           settingsStore: _settingsStore,
                           statusStore: _statusStore,
                           capabilities: _capabilities,

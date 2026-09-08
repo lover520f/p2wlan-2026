@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 import 'package:p2wlan_flutter_client/app/desktop_tray_controller.dart';
 import 'package:p2wlan_flutter_client/app/desktop_window_status_controller.dart';
 import 'package:p2wlan_flutter_client/core/api/diagnostics_api.dart';
@@ -13,6 +14,118 @@ import 'package:p2wlan_flutter_client/core/state/settings_store.dart';
 import 'package:p2wlan_flutter_client/core/state/status_store.dart';
 
 void main() {
+  final binding = TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'explicit quit terminates macOS app once after the daemon stops',
+    () async {
+      final snapshot = await _loadFixtureSnapshot();
+      final api = _FakeDiagnosticsApi(snapshot: snapshot);
+      final stopped = Completer<DaemonCommandResult>();
+      final daemon = _DelayedStopDaemonController(
+        diagnosticsApi: api,
+        stopCompleter: stopped,
+      );
+      final stores = await _makeStores(api: api, daemonController: daemon);
+      addTearDown(stores.dispose);
+      final calls = <String>[];
+      for (final name in ['window_manager', 'tray_manager']) {
+        final channel = MethodChannel(name);
+        binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+          call,
+        ) async {
+          calls.add('$name.${call.method}');
+          return true;
+        });
+        addTearDown(
+          () => binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            channel,
+            null,
+          ),
+        );
+      }
+      await stores.statusStore.refresh();
+      final controller = DesktopTrayController(
+        settingsStore: stores.settingsStore,
+        statusStore: stores.statusStore,
+      );
+      await controller.initialize();
+      calls.clear();
+      final first = controller.quitForLifecycleTest();
+      final second = controller.quitForLifecycleTest();
+      expect(second, same(first));
+      await Future<void>.delayed(Duration.zero);
+      expect(daemon.stopCalls, 1);
+      expect(calls, isNot(contains('tray_manager.destroy')));
+      expect(calls, isNot(contains('window_manager.destroy')));
+      expect(calls, isNot(contains('window_manager.close')));
+      stopped.complete(const DaemonCommandResult(ok: true, message: 'stopped'));
+      await first;
+      await controller.dispose();
+      final terminalCall = Platform.isMacOS
+          ? 'window_manager.destroy'
+          : 'window_manager.close';
+      expect(calls.where((call) => call == terminalCall), hasLength(1));
+      expect(
+        calls.where((call) => call == 'tray_manager.destroy'),
+        hasLength(1),
+      );
+      expect(
+        calls.indexOf('tray_manager.destroy'),
+        lessThan(calls.indexOf(terminalCall)),
+      );
+      expect(
+        calls.indexOf('window_manager.setPreventClose'),
+        lessThan(calls.indexOf(terminalCall)),
+      );
+      if (Platform.isMacOS) {
+        expect(calls, isNot(contains('window_manager.close')));
+      }
+    },
+  );
+
+  test('failed daemon stop keeps the app available for retry', () async {
+    final snapshot = await _loadFixtureSnapshot();
+    final api = _FakeDiagnosticsApi(snapshot: snapshot);
+    final stopped = Completer<DaemonCommandResult>();
+    final daemon = _DelayedStopDaemonController(
+      diagnosticsApi: api,
+      stopCompleter: stopped,
+    );
+    final stores = await _makeStores(api: api, daemonController: daemon);
+    addTearDown(stores.dispose);
+    final calls = <String>[];
+    for (final name in ['window_manager', 'tray_manager']) {
+      final channel = MethodChannel(name);
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+        call,
+      ) async {
+        calls.add('$name.${call.method}');
+        return call.method == 'isMinimized' ? false : true;
+      });
+      addTearDown(
+        () => binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          null,
+        ),
+      );
+    }
+    await stores.statusStore.refresh();
+    final controller = DesktopTrayController(
+      settingsStore: stores.settingsStore,
+      statusStore: stores.statusStore,
+    );
+    final quit = controller.quitForLifecycleTest();
+    stopped.complete(
+      const DaemonCommandResult(ok: false, message: 'stop failed'),
+    );
+    await quit;
+    expect(calls, isNot(contains('window_manager.destroy')));
+    expect(calls, isNot(contains('window_manager.close')));
+    expect(calls, isNot(contains('tray_manager.destroy')));
+    expect(calls, contains('window_manager.show'));
+  });
+
   test('desktop tray shows start as the offline primary control', () async {
     final stores = await _makeStores(api: DiagnosticsApi());
     addTearDown(stores.dispose);
@@ -335,10 +448,7 @@ void main() {
     expect(controller.closeActionForTesting(), 'hide');
 
     await stores.settingsStore.updateSettings(
-      stores.settingsStore.settings.copyWith(
-        manualMode: true,
-        closeBehavior: 'stop-and-quit',
-      ),
+      stores.settingsStore.settings.copyWith(closeBehavior: 'stop-and-quit'),
     );
 
     expect(controller.closeActionForTesting(), 'quit');

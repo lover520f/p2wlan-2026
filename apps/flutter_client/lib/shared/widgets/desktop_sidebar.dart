@@ -5,6 +5,7 @@ import '../../app/app_tokens.dart';
 import '../../app/navigation_model.dart';
 import '../../app/p2wlan_colors.dart';
 import '../../core/state/status_store.dart';
+import '../../core/rooms/parallel_rooms.dart';
 import 'status_badge.dart';
 
 /// Expanded desktop side navigation: brand header, primary sections grouped
@@ -219,7 +220,7 @@ class _SidebarFooter extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return AnimatedBuilder(
-      animation: statusStore,
+      animation: Listenable.merge([statusStore, statusStore.parallelRooms]),
       builder: (context, _) {
         final (tone, label, detail) = _footerStatus(strings, statusStore);
         final colors = P2WlanColors.of(context);
@@ -311,6 +312,20 @@ class _SidebarFooter extends StatelessWidget {
     AppStrings strings,
     StatusStore store,
   ) {
+    final rooms = store.parallelRooms.sessions.values;
+    final connected = rooms
+        .where((room) => room.phase == RoomConnectionPhase.running)
+        .length;
+    if (connected > 0 && (!store.daemonReachable || store.snapshot == null)) {
+      final attention = rooms.any(
+        (room) => room.phase != RoomConnectionPhase.running,
+      );
+      return (
+        attention ? StatusTone.warn : StatusTone.good,
+        strings.isZh ? '房间已连接' : 'Rooms connected',
+        strings.isZh ? '$connected 个房间运行中' : '$connected active rooms',
+      );
+    }
     if (!store.daemonReachable || store.snapshot == null) {
       return (
         StatusTone.neutral,

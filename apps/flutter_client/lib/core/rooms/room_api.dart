@@ -31,6 +31,10 @@ class FriendRoom {
     required this.ownerId,
     required this.role,
     required this.locked,
+    this.ownerUsername = '',
+    this.memberCount,
+    this.onlineMemberCount,
+    this.ownerDeviceIps = const [],
   });
   factory FriendRoom.fromJson(Map<String, dynamic> json) {
     final id = json['id'] as String? ?? '';
@@ -49,6 +53,12 @@ class FriendRoom {
       ownerId: json['owner_id'] as String? ?? '',
       role: json['role'] as String? ?? 'member',
       locked: json['join_locked'] == true,
+      ownerUsername: json['owner_username'] as String? ?? '',
+      memberCount: (json['member_count'] as num?)?.toInt(),
+      onlineMemberCount: (json['online_member_count'] as num?)?.toInt(),
+      ownerDeviceIps: (json['owner_device_ips'] as List? ?? [])
+          .whereType<String>()
+          .toList(),
     );
   }
   final String id;
@@ -58,6 +68,10 @@ class FriendRoom {
   final String ownerId;
   final String role;
   final bool locked;
+  final String ownerUsername;
+  final int? memberCount;
+  final int? onlineMemberCount;
+  final List<String> ownerDeviceIps;
   bool get isOwner => role == 'owner';
 }
 

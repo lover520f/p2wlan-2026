@@ -83,6 +83,29 @@ class ControlApi {
     );
   }
 
+  Future<String> profileUsername({
+    required String controlServer,
+    required String authToken,
+    String? username,
+  }) async {
+    final name = username?.trim();
+    if (name != null &&
+        (name.isEmpty ||
+            name.runes.length > 32 ||
+            RegExp(r'[\x00-\x1f\x7f-\x9f]').hasMatch(name))) {
+      throw const ControlApiException('用户名需为 1–32 个字符，不能包含控制字符');
+    }
+    final body = await _sendJson(
+      method: name == null ? 'GET' : 'PATCH',
+      uri: Uri.parse(
+        '${_normalizeAuthControlServer(controlServer)}/api/v1/profile',
+      ),
+      authToken: authToken,
+      payload: name == null ? null : {'username': name},
+    );
+    return (body['user'] as Map?)?['username'] as String? ?? '';
+  }
+
   Future<String> renameDevice({
     required String controlServer,
     required String authToken,
@@ -250,6 +273,7 @@ class ControlApi {
       final request = await _client
           .postUrl(endpoint)
           .timeout(_supportLogUploadTimeout);
+      request.followRedirects = false;
       request.persistentConnection = false;
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
       request.headers.contentType = ContentType.json;
@@ -310,6 +334,7 @@ class ControlApi {
       final request = await _client
           .openUrl(method, uri)
           .timeout(_requestTimeout);
+      request.followRedirects = false;
       request.persistentConnection = false;
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
       if (authToken != null && authToken.trim().isNotEmpty) {

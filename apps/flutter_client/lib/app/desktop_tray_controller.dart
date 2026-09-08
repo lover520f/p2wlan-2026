@@ -726,7 +726,16 @@ class DesktopTrayController with TrayListener, WindowListener {
     _trace('window.close.begin');
     await DesktopWindowOperations.run(() async {
       await windowManager.setPreventClose(false);
-      await windowManager.close();
+      if (Platform.isMacOS) {
+        // With the tray enabled, AppDelegate intentionally keeps the app alive
+        // after its last window closes. Explicit Quit must terminate NSApp;
+        // window.close() only removes the window and leaves an invisible app.
+        // The daemon and all room runtimes have already stopped above.
+        _trace('application.terminate.begin');
+        await windowManager.destroy();
+      } else {
+        await windowManager.close();
+      }
     });
     _trace('window.close.end');
   }

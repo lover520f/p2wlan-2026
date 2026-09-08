@@ -29,12 +29,16 @@ class P2WlanShell extends StatefulWidget {
     required this.settingsStore,
     required this.statusStore,
     this.onLogout,
+    this.roomInvitation,
+    this.onRoomInvitationHandled,
     this.capabilities,
   });
 
   final SettingsStore settingsStore;
   final StatusStore statusStore;
   final VoidCallback? onLogout;
+  final Uri? roomInvitation;
+  final VoidCallback? onRoomInvitationHandled;
 
   /// Platform capability override (primarily for tests); defaults to the
   /// current runtime platform.
@@ -53,6 +57,7 @@ class _P2WlanShellState extends State<P2WlanShell> {
   /// the id avoids passing a stale snapshot while the list is mounting; the
   /// list resolves the newest peer and opens its own full detail surface.
   String? _pendingPeerId;
+  String? _selectedRoomId;
 
   /// Home opens a peer through the canonical Devices detail flow. Remember
   /// the originating section so dismissing that detail returns to Home rather
@@ -74,12 +79,19 @@ class _P2WlanShellState extends State<P2WlanShell> {
   void initState() {
     super.initState();
     _settingsController = SettingsPageController();
+    if (widget.roomInvitation != null) _section = P2WlanSection.interconnect;
     widget.settingsStore.addListener(_handleSettingsChanged);
   }
 
   @override
   void didUpdateWidget(covariant P2WlanShell oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.roomInvitation != null &&
+        widget.roomInvitation != oldWidget.roomInvitation) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _select(P2WlanSection.interconnect);
+      });
+    }
     if (oldWidget.settingsStore != widget.settingsStore) {
       oldWidget.settingsStore.removeListener(_handleSettingsChanged);
       widget.settingsStore.addListener(_handleSettingsChanged);
@@ -178,6 +190,7 @@ class _P2WlanShellState extends State<P2WlanShell> {
     // desktop because they have no footer.
     final showStatusBadge = !hasSidebarFooter && _section != P2WlanSection.home;
     return AppBar(
+      toolbarHeight: _usesMacosChrome ? 36 : null,
       leading: _usesMacosChrome ? const SizedBox.shrink() : null,
       leadingWidth: _usesMacosChrome ? 76 : null,
       title: isMobileLayout ? Text(_appBarTitle(strings)) : null,
@@ -237,6 +250,10 @@ class _P2WlanShellState extends State<P2WlanShell> {
         onOpenSettings: () => _select(P2WlanSection.settings),
       ),
       P2WlanSection.interconnect => RoomsPage(
+        initialInvitation: widget.roomInvitation,
+        initialRoomId: _selectedRoomId,
+        onRoomSelected: (id) => _selectedRoomId = id,
+        onInvitationHandled: widget.onRoomInvitationHandled,
         settingsStore: widget.settingsStore,
         statusStore: widget.statusStore,
         capabilities: widget.capabilities,

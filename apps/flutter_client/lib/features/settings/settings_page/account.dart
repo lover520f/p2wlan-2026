@@ -20,6 +20,15 @@ class _AccountSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (state.widget.settingsStore.settings.authToken.trim().isNotEmpty)
+          UsernameSettings(
+            key: ValueKey((
+              state.widget.settingsStore.settings.controlServer,
+              state.widget.settingsStore.settings.authToken,
+            )),
+            server: state.widget.settingsStore.settings.controlServer,
+            token: state.widget.settingsStore.settings.authToken,
+          ),
         _PreferenceRow(
           label: strings.credentialSectionTitle,
           subtitle: credentialState,

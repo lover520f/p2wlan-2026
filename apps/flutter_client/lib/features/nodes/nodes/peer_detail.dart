@@ -837,9 +837,12 @@ class _DetailActions extends StatelessWidget {
 
 /// Detail dialog used by medium and wide layouts. Shares the same content as
 /// the compact full-screen detail.
-class _PeerDetailsDialog extends StatelessWidget {
-  const _PeerDetailsDialog({
-    required this.peer,
+class DeviceDetailsDialog extends StatelessWidget {
+  const DeviceDetailsDialog({
+    super.key,
+    this.peer,
+    this.content,
+    this.contextHeader,
     required this.strings,
     this.statusStore,
     this.copiedKey,
@@ -848,9 +851,11 @@ class _PeerDetailsDialog extends StatelessWidget {
     this.onEdit,
     this.onDelete,
     this.onSpeedTest,
-  });
+  }) : assert(peer != null || content != null);
 
-  final PeerSnapshot peer;
+  final PeerSnapshot? peer;
+  final Widget? content;
+  final Widget? contextHeader;
   final AppStrings strings;
   final StatusStore? statusStore;
   final String? copiedKey;
@@ -953,13 +958,24 @@ class _PeerDetailsDialog extends StatelessWidget {
                 Flexible(
                   child: SingleChildScrollView(
                     padding: const EdgeInsets.all(AppTokens.space20),
-                    child: statusStore == null
-                        ? details(peer)
-                        : AnimatedBuilder(
-                            animation: statusStore!,
-                            builder: (context, _) =>
-                                details(_latestPeer(statusStore, peer)),
-                          ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (contextHeader != null) ...[
+                          contextHeader!,
+                          const SizedBox(height: 12),
+                        ],
+                        content ??
+                            (statusStore == null
+                                ? details(peer!)
+                                : AnimatedBuilder(
+                                    animation: statusStore!,
+                                    builder: (context, _) => details(
+                                      _latestPeer(statusStore, peer!),
+                                    ),
+                                  )),
+                      ],
+                    ),
                   ),
                 ),
               ],

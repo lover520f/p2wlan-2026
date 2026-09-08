@@ -85,6 +85,9 @@ func main() {
 	// bundle in the server's private support-log directory.
 	mux.HandleFunc("POST /api/v1/support/logs", rateLimit(authService.RequireAuth(apiServer.UploadSupportLogs), 3, time.Hour))
 
+	mux.HandleFunc("GET /api/v1/profile", authService.RequireAuth(apiServer.Profile))
+	mux.HandleFunc("PATCH /api/v1/profile", authService.RequireAuth(apiServer.Profile))
+
 	// Dual-auth routes (accept user JWT or device credential)
 	anyAuth := auth.RequireAnyAuth(authService, db)
 	mux.HandleFunc("POST /api/v1/devices", anyAuth(apiServer.RegisterDevice))
