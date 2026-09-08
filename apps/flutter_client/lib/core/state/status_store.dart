@@ -863,23 +863,32 @@ class StatusStore extends ChangeNotifier {
     );
   }
 
-  Future<DaemonCommandResult> stopDaemon() =>
-      parallelRooms.withConnectionsPaused(() async {
+  Future<DaemonCommandResult> stopDaemon() {
+    cancelSpeedTest();
+    return _runDaemonCommand(() {
+      final primaryFuture = daemonController.stop(
+        settingsStore.settings.diagnosticsUrl,
+      );
+      if (!parallelRooms.hasSessions) {
+        return primaryFuture;
+      }
+      return parallelRooms.withConnectionsPaused(() async {
         final rooms = await parallelRooms.stopAll();
-        if (!rooms.ok) return rooms;
-        final primary = await stopPrimaryDaemon();
+        final primary = await primaryFuture;
         return DaemonCommandResult(
-          ok: primary.ok,
-          message: primary.message,
+          ok: primary.ok && rooms.ok,
+          message: !rooms.ok ? rooms.message : primary.message,
           manualCommand: primary.manualCommand,
-          failureCode: primary.failureCode,
+          failureCode: primary.failureCode ?? rooms.failureCode,
           graceful: primary.graceful && rooms.graceful,
           forcedTermination:
               primary.forcedTermination || rooms.forcedTermination,
         );
       });
+    });
+  }
 
-  Future<DaemonCommandResult> stopPrimaryDaemon() async {
+  Future<DaemonCommandResult> stopPrimaryDaemon() {
     cancelSpeedTest();
     return _runDaemonCommand(
       () => daemonController.stop(settingsStore.settings.diagnosticsUrl),

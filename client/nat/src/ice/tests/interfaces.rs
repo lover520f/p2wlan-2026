@@ -170,7 +170,7 @@ fn test_candidate_interface_name_filter() {
     assert!(is_candidate_interface_name("Wi-Fi"));
 
     for name in [
-        "lo0", "utun6", "tun0", "tap0", "wg0", "p2pnet0", "p2wlan", "wintun", "docker0", "br-123",
+        "lo0", "utun6", "tun0", "tap0", "wg0", "p2pnet0", "p2wlan", "p2r-room1", "wintun", "docker0", "br-123",
         "vethabc", "llw0", "awdl0",
     ] {
         assert!(!is_candidate_interface_name(name), "{name}");

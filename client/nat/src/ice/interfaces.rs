@@ -227,7 +227,7 @@ fn is_ipv6_unicast_link_local(ip: Ipv6Addr) -> bool {
 fn is_candidate_interface_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     ![
-        "lo", "utun", "tun", "tap", "wg", "p2pnet", "p2wlan", "wintun", "docker", "br-", "veth",
+        "lo", "utun", "tun", "tap", "wg", "p2pnet", "p2wlan", "p2r", "wintun", "docker", "br-", "veth",
         "llw", "awdl",
     ]
     .iter()

@@ -262,6 +262,18 @@ def main() -> int:
         if isinstance(error, RuntimeError):
             lab.evidence['failure_detail'] = str(error)[:300]
             print(str(error), file=sys.stderr)
+        for name, entry in lab.daemons.items():
+            log_path = entry['directory'] / 'p2wlan-daemon.log'
+            if log_path.exists():
+                lines = log_path.read_text().splitlines()[-40:]
+                print(f"=== {name} daemon log tail ===", file=sys.stderr)
+                print("\n".join(lines), file=sys.stderr)
+            console_path = lab.root / (name + '.console')
+            if console_path.exists():
+                lines = console_path.read_text().splitlines()[-40:]
+                if lines:
+                    print(f"=== {name} console tail ===", file=sys.stderr)
+                    print("\n".join(lines), file=sys.stderr)
         print('FAIL real TUN parallel rooms: ' + type(error).__name__, file=sys.stderr)
         return 1
     finally:

@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:p2wlan_flutter_client/core/capabilities/platform_capabilities.dart';
 import 'package:p2wlan_flutter_client/core/api/diagnostics_api.dart';
 import 'package:p2wlan_flutter_client/core/models/diagnostics_models.dart';
+import 'package:p2wlan_flutter_client/core/rooms/parallel_rooms.dart';
 import 'package:p2wlan_flutter_client/core/rooms/room_api.dart';
 import 'package:p2wlan_flutter_client/core/security/secure_token_repository.dart';
 import 'package:p2wlan_flutter_client/core/state/settings_store.dart';
@@ -141,7 +142,12 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       await pump(tester);
-      expect(find.textContaining('每台设备同时连接一个网络'), findsOneWidget);
+      expect(
+        find.textContaining(
+          ParallelRooms.platformSupported ? '可同时连接多个房间' : '此平台目前仍为单活动网络',
+        ),
+        findsOneWidget,
+      );
       expect(find.text('解散房间'), findsOneWidget);
       expect(find.text('邀请管理'), findsOneWidget);
       expect(find.byType(PopupMenuButton<String>), findsOneWidget);

@@ -232,6 +232,7 @@ mod windows_helper_tests {
         assert!(windows_is_managed_interface_alias("p2wlan"));
         assert!(windows_is_managed_interface_alias("P2WLAN-test"));
         assert!(windows_is_managed_interface_alias("p2pnet0"));
+        assert!(windows_is_managed_interface_alias("p2r-room1"));
         assert!(!windows_is_managed_interface_alias("Ethernet"));
         assert!(!windows_is_managed_interface_alias("Wi-Fi"));
     }

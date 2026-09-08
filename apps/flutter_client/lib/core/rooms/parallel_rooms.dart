@@ -57,14 +57,15 @@ class ParallelRooms extends ChangeNotifier {
     bool? supported,
     this.maxConnections = 8,
     this.refreshInterval = const Duration(seconds: 5),
-  }) : supported =
-           supported ??
-           (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+  }) : supported = supported ?? platformSupported {
     if (maxConnections < 1 || maxConnections > 32) {
       throw ArgumentError.value(maxConnections, 'maxConnections');
     }
     _credentials = _credentialKey(readSettings());
   }
+
+  static bool get platformSupported =>
+      Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
   final AppSettings Function() readSettings;
   final RoomRuntimeFactory runtimeFactory;
@@ -75,17 +76,19 @@ class ParallelRooms extends ChangeNotifier {
   final _operations = <String, Future<DaemonCommandResult>>{};
   final _recovering = <String>{};
   Timer? _timer;
-  String _credentials = '';
-  int _epoch = 0;
-  int _admissionPauses = 0;
-  bool _disposed = false;
+  var _credentials = '';
+  var _epoch = 0;
+  var _admissionPauses = 0;
+  var _disposed = false;
   Future<DaemonCommandResult>? _stoppingAll;
   String? lastError;
 
   Map<String, ParallelRoomSession> get sessions => Map.unmodifiable(_sessions);
   bool get hasSessions =>
       _sessions.isNotEmpty || _operations.isNotEmpty || _recovering.isNotEmpty;
+  int get activeConnections => _sessions.length;
   bool get connectionsPaused => _admissionPauses > 0;
+  bool get stoppingAll => _stoppingAll != null;
   bool get busy =>
       _operations.isNotEmpty || _stoppingAll != null || connectionsPaused;
   ParallelRoomSession? session(String roomId) => _sessions[roomId];
@@ -93,23 +96,26 @@ class ParallelRooms extends ChangeNotifier {
   String _credentialKey(AppSettings value) =>
       '${value.controlServer}\n${value.authToken}';
 
-  Future<DaemonCommandResult> credentialsChanged() async {
-    final next = _credentialKey(readSettings());
-    if (_credentials == next) return _ok();
-    _credentials = next;
+  Future<DaemonCommandResult> credentialsChanged() {
+    _credentials = _credentialKey(readSettings());
     _epoch++;
     return stopAll();
   }
 
-  Future<T> withConnectionsPaused<T>(Future<T> Function() action) async {
+  Future<T> withConnectionsPaused<T>(Future<T> Function() action) {
     _admissionPauses++;
     _epoch++;
     _notify();
     try {
-      return await action();
-    } finally {
+      final future = action();
+      return future.whenComplete(() {
+        _admissionPauses--;
+        _notify();
+      });
+    } catch (_) {
       _admissionPauses--;
       _notify();
+      rethrow;
     }
   }
 
