@@ -15,7 +15,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.150"
+version = "0.1.151"
 edition = "2021"
 authors = ["P2PNet Team"]
 license = "MIT"
