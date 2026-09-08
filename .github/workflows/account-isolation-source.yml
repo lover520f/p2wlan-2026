@@ -1,0 +1,20 @@
+name: Account isolation source
+on:
+  push:
+    branches: [feat/account-isolation-interconnect-20260908]
+    paths: [.github/workflows/account-isolation-source.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: git archive --format=tar.gz HEAD -o "${RUNNER_TEMP}/source.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: account-isolation-source
+          path: ${{ runner.temp }}/source.tar.gz
+          retention-days: 1
