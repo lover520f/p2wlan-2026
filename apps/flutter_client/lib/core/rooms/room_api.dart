@@ -70,7 +70,7 @@ bool validRoomCidr(String cidr) {
   return bytes[0] == 10 &&
       bytes[1] == 21 &&
       bytes[3] == 0 &&
-      address.address == parts[0];
+      '${bytes[0]}.${bytes[1]}.${bytes[2]}.${bytes[3]}' == parts[0];
 }
 
 bool validRoomIp(String ip, String cidr) {
@@ -78,7 +78,8 @@ bool validRoomIp(String ip, String cidr) {
   final address = InternetAddress.tryParse(ip);
   if (address == null ||
       address.type != InternetAddressType.IPv4 ||
-      address.address != ip) {
+      '${address.rawAddress[0]}.${address.rawAddress[1]}.${address.rawAddress[2]}.${address.rawAddress[3]}' !=
+          ip) {
     return false;
   }
   final bytes = address.rawAddress;
