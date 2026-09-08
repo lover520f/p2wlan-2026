@@ -12,9 +12,22 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - run: git archive --format=tar.gz HEAD -o "${RUNNER_TEMP}/source.tar.gz"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version-file: .fvmrc
+          cache: true
+      - working-directory: apps/flutter_client
+        run: flutter pub get
+      - name: Archive read-only host test tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/offline-host"
+          tar -C "$FLUTTER_ROOT" --exclude='./bin/cache/dart-sdk' --exclude='./bin/cache/artifacts/engine/android*' --exclude='./bin/cache/flutter_web_sdk' --exclude='./bin/cache/artifacts/engine/ios*' --exclude='./bin/cache/artifacts/engine/windows*' --exclude='./bin/cache/artifacts/engine/darwin*' -czf "$RUNNER_TEMP/offline-host/flutter-host.tar.gz" .
+          tar -C "$HOME" -czf "$RUNNER_TEMP/offline-host/pub-cache.tar.gz" .pub-cache
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: account-isolation-source
-          path: ${{ runner.temp }}/source.tar.gz
+          name: account-isolation-offline-host
+          path: ${{ runner.temp }}/offline-host/*.tar.gz
           retention-days: 1
