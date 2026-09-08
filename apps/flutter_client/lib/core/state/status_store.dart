@@ -1095,7 +1095,9 @@ class StatusStore extends ChangeNotifier {
     final accountChanged = nextSession != _lastAccountSession;
     if (accountChanged) {
       _lastAccountSession = nextSession;
-      _accountRequiresRestart = true;
+      _accountRequiresRestart =
+          !settingsStore.settings.manualMode &&
+          settingsStore.settings.authToken.trim().isNotEmpty;
       unawaited(parallelRooms.credentialsChanged());
       _clearAccountHistory();
     }

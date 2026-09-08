@@ -376,6 +376,18 @@ void main() {
       expect(await tokens.read(), anyOf(isNull, isEmpty));
     },
   );
+
+  test(
+    'manual mode permits diagnostics refresh without requiring startDaemon',
+    () async {
+      await settings.updateSettings(
+        settings.settings.copyWith(manualMode: true, authToken: ''),
+      );
+      expect(daemon.stops, 1);
+      await status.refresh();
+      expect(status.daemonReachable, isTrue);
+    },
+  );
 }
 
 class _PendingDeviceEdit extends ControlApi {
