@@ -33,7 +33,9 @@ extension DaemonControllerRoomRoutes on DaemonController {
         routes,
         authenticatedInterface: authenticatedInterface,
       );
-      return conflict == null ? null : '房间网段与本机现有路由重叠，未修改现有网络';
+      return conflict == null
+          ? null
+          : nativeRoomConflictMessage(cidr, conflict);
     } catch (_) {
       return '无法确认本机路由无冲突，未启动房间';
     }

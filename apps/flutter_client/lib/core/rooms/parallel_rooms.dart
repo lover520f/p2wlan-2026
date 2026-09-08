@@ -97,7 +97,9 @@ class ParallelRooms extends ChangeNotifier {
       '${value.controlServer}\n${value.authToken}';
 
   Future<DaemonCommandResult> credentialsChanged() {
-    _credentials = _credentialKey(readSettings());
+    final next = _credentialKey(readSettings());
+    if (next == _credentials) return Future.value(_ok());
+    _credentials = next;
     _epoch++;
     return stopAll();
   }
@@ -215,9 +217,6 @@ class ParallelRooms extends ChangeNotifier {
 
   String? _conflict(ParallelRoomPlan plan, AppSettings account) {
     if (account.networkId == plan.room.id) return '此房间仍被主网络使用，请先切回个人网络';
-    if (cidrsOverlap(account.overlayCidr, plan.room.cidr)) {
-      return '房间网段与主网络配置重叠';
-    }
     if (Uri.tryParse(account.diagnosticsUrl)?.port ==
         Uri.parse(plan.settings.diagnosticsUrl).port) {
       return '房间诊断端口与主网络配置冲突';

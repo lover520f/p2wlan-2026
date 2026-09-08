@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 ///
 /// Information architecture:
 ///
-///   Desktop and mobile primary: Home / Devices / Settings
+///   Desktop and mobile primary: Home / Devices / Interconnect / Settings
 ///
 /// Troubleshooting carries the full technical surface (route verification,
 /// repair, daemon restart, permissions, logs, raw data) behind its Advanced
@@ -14,7 +14,8 @@ import 'package:flutter/material.dart';
 /// "Hide complexity, don't remove capability."
 enum P2WlanSection {
   home(Icons.home_outlined),
-  devices(Icons.hub_outlined),
+  devices(Icons.devices_outlined),
+  interconnect(Icons.lan_outlined),
   troubleshooting(Icons.monitor_heart_outlined),
   settings(Icons.settings_outlined);
 
@@ -23,16 +24,26 @@ enum P2WlanSection {
   final IconData icon;
 
   /// Primary user-level destinations, in display order.
-  static const List<P2WlanSection> primary = [home, devices, settings];
+  static const List<P2WlanSection> primary = [
+    home,
+    devices,
+    interconnect,
+    settings,
+  ];
 
-  /// Permanent compact (phone) bottom-bar destinations — exactly three.
+  /// Permanent compact (phone) bottom-bar destinations — four.
   /// Troubleshooting is deliberately absent: it is entered from the shell
   /// overflow menu today and from Home's "check issues" path.
-  static const List<P2WlanSection> mobilePrimary = [home, devices, settings];
+  static const List<P2WlanSection> mobilePrimary = [
+    home,
+    devices,
+    interconnect,
+    settings,
+  ];
 
   /// Desktop sidebar grouping.
   static const List<List<P2WlanSection>> sidebarGroups = [
-    [home, devices],
+    [home, devices, interconnect],
     [settings],
   ];
 }

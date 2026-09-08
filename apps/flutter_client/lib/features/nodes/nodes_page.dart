@@ -5,7 +5,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../rooms/rooms_page.dart';
 import '../../app/app_constants.dart';
 import '../../app/app_strings.dart';
 import '../../app/app_tokens.dart';
@@ -14,6 +13,7 @@ import '../../core/api/control_api.dart';
 import '../../core/capabilities/platform_capabilities.dart';
 import '../../core/models/diagnostics_models.dart';
 import '../../core/security/redactor.dart';
+import '../../core/rooms/room_profiles.dart';
 import '../../core/state/settings_store.dart';
 import '../../core/state/status_store.dart';
 import '../../shared/formatters.dart';
@@ -181,6 +181,7 @@ class _NodesPageState extends State<NodesPage> {
             widget.settingsStore,
           ]),
           builder: (context, _) {
+            final settings = widget.settingsStore.settings;
             final capabilities =
                 widget.capabilities ?? PlatformCapabilities.current();
             final remoteOnly = !capabilities.canActAsLocalVpnNode;
@@ -197,39 +198,12 @@ class _NodesPageState extends State<NodesPage> {
             final peerTransferRates = widget.statusStore.snapshotStale
                 ? const <String, int>{}
                 : widget.statusStore.peerTransferRatesBytesPerSecond;
-            final settings = widget.settingsStore.settings;
             return PageScaffold(
               title: stringsOf(context).nodes,
               subtitle: stringsOf(context).nodesSubtitle,
               showHeader: widget.showHeader,
               maxWidth: nodesPageMaxWidth,
               children: [
-                Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.groups_outlined),
-                    title: Text(
-                      settings.languageCode.startsWith('zh')
-                          ? '好友房间'
-                          : 'Friend rooms',
-                    ),
-                    subtitle: Text(
-                      settings.languageCode.startsWith('zh')
-                          ? '创建、加入和管理独立局域网'
-                          : 'Create, join and manage private networks',
-                    ),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                    onTap: () => Navigator.of(context).push<void>(
-                      MaterialPageRoute(
-                        builder: (_) => RoomsPage(
-                          settingsStore: widget.settingsStore,
-                          statusStore: widget.statusStore,
-                          capabilities: capabilities,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: AppTokens.space12),
                 if (remoteOnly) const _RemoteOnlyNodesState(),
                 if (!remoteOnly) ...[
                   _NodeToolbar(
@@ -357,6 +331,11 @@ class _NodesPageState extends State<NodesPage> {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
+  bool _acceptsAccount(AppSettings settings) =>
+      mounted &&
+      accountSessionKey(settings) ==
+          accountSessionKey(widget.settingsStore.settings);
+
   Future<void> _editLocalNode(DiagnosticsSnapshot? snapshot) async {
     final strings = stringsOf(context);
     final settings = widget.settingsStore.settings;
@@ -366,12 +345,12 @@ class _NodesPageState extends State<NodesPage> {
     final initialVirtualIp = settings.virtualIp.trim().isNotEmpty
         ? settings.virtualIp.trim()
         : snapshot?.virtualIp.trim() ?? '';
-    if (!mounted) return;
+    if (!_acceptsAccount(settings)) return;
     final result = await _promptLocalNodeProfile(
       initialName: initialName,
       initialVirtualIp: initialVirtualIp,
     );
-    if (result == null) return;
+    if (result == null || !_acceptsAccount(settings)) return;
 
     final nodeId = snapshot?.nodeId.trim() ?? '';
     final canSync =
@@ -396,18 +375,19 @@ class _NodesPageState extends State<NodesPage> {
             ? result.virtualIp
             : saved.virtualIp;
       }
+      if (!_acceptsAccount(settings)) return;
       await widget.settingsStore.updateSettings(
         settings.copyWith(deviceName: savedName, virtualIp: savedVirtualIp),
       );
       await widget.statusStore.refresh();
-      if (!mounted) return;
+      if (!_acceptsAccount(settings)) return;
       _showSnack(
         canSync
             ? strings.nodeSynced(savedName, dash(savedVirtualIp))
             : strings.nodeSaved(savedName, dash(savedVirtualIp)),
       );
     } catch (error) {
-      if (!mounted) return;
+      if (!_acceptsAccount(settings)) return;
       _showSnack(strings.deviceSaveFailed);
     }
   }
@@ -415,12 +395,12 @@ class _NodesPageState extends State<NodesPage> {
   Future<void> _editPeer(PeerSnapshot peer) async {
     if (_busyPeerId != null) return;
     final strings = stringsOf(context);
+    final settings = widget.settingsStore.settings;
     final result = await _promptDeviceName(
       initialName: peer.displayName,
       title: strings.renameDevice,
     );
-    if (result == null) return;
-    final settings = widget.settingsStore.settings;
+    if (result == null || !_acceptsAccount(settings)) return;
     setState(() => _busyPeerId = peer.nodeId);
     try {
       final savedName = await _controlApi.renameDevice(
@@ -429,11 +409,11 @@ class _NodesPageState extends State<NodesPage> {
         deviceId: peer.nodeId,
         deviceName: result,
       );
-      if (!mounted) return;
+      if (!_acceptsAccount(settings)) return;
       _showSnack(strings.deviceNameSynced(savedName));
       await widget.statusStore.refresh();
     } catch (error) {
-      if (!mounted) return;
+      if (!_acceptsAccount(settings)) return;
       _showSnack(strings.deviceRenameFailed);
     } finally {
       if (mounted && _busyPeerId == peer.nodeId) {
@@ -448,6 +428,7 @@ class _NodesPageState extends State<NodesPage> {
   Future<bool> _deletePeer(PeerSnapshot peer) async {
     if (_busyPeerId != null) return false;
     final strings = stringsOf(context);
+    final settings = widget.settingsStore.settings;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -470,8 +451,7 @@ class _NodesPageState extends State<NodesPage> {
         ],
       ),
     );
-    if (confirmed != true) return false;
-    final settings = widget.settingsStore.settings;
+    if (confirmed != true || !_acceptsAccount(settings)) return false;
     setState(() => _busyPeerId = peer.nodeId);
     try {
       await _controlApi.deleteDevice(
@@ -479,9 +459,10 @@ class _NodesPageState extends State<NodesPage> {
         authToken: settings.authToken,
         deviceId: peer.nodeId,
       );
-      if (mounted) setState(() => _hiddenPeerIds.add(peer.nodeId));
+      if (!_acceptsAccount(settings)) return false;
+      setState(() => _hiddenPeerIds.add(peer.nodeId));
       await widget.statusStore.refresh();
-      if (!mounted) return true;
+      if (!_acceptsAccount(settings)) return false;
       _showSnack(strings.deviceRemoved(peer.displayName));
       return true;
     } catch (error) {

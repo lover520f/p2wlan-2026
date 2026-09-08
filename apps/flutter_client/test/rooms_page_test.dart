@@ -29,6 +29,7 @@ class _FakeRoomApi extends RoomApi {
     : super(server: 'https://control.example', token: 'account-token');
   final String role;
   bool empty;
+  String? joinError;
   final calls = <String>[];
   @override
   Future<List<FriendRoom>> list() async {
@@ -79,6 +80,7 @@ class _FakeRoomApi extends RoomApi {
     String? invitation,
   }) async {
     calls.add('join:$code:$password:$invitation');
+    if (joinError != null) throw RoomException(joinError!);
     return FriendRoom.fromJson(_room('member'));
   }
 }
@@ -148,7 +150,12 @@ void main() {
         ),
         findsOneWidget,
       );
+      expect(find.text('解散房间'), findsNothing);
+      await tester.tap(find.text('房间设置'));
+      await tester.pumpAndSettle();
       expect(find.text('解散房间'), findsOneWidget);
+      await tester.tap(find.textContaining('成员 ·'));
+      await tester.pumpAndSettle();
       expect(find.text('邀请管理'), findsOneWidget);
       expect(find.byType(PopupMenuButton<String>), findsOneWidget);
       expect(find.text('创建房间'), findsOneWidget);
@@ -226,7 +233,7 @@ void main() {
     'room password join uses only the explicitly entered credentials',
     (tester) async {
       final api = await pump(tester);
-      await tester.tap(find.text('房间号加入'));
+      await tester.tap(find.text('加入房间'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const ValueKey('房间号')), '87654321');
       await tester.enterText(find.byKey(const ValueKey('房间密码')), 'password456');
@@ -237,4 +244,25 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+  testWidgets('operation errors survive successful background room refresh', (
+    tester,
+  ) async {
+    final api = await pump(tester);
+    api.joinError = '房间加入失败：房间密码不正确';
+    await tester.tap(find.text('加入房间'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('房间号')), '87654321');
+    await tester.enterText(find.byKey(const ValueKey('房间密码')), 'wrong-pass');
+    await tester.tap(find.text('确认'));
+    await tester.pumpAndSettle();
+    expect(find.text(api.joinError!), findsOneWidget);
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pumpAndSettle();
+    expect(find.text(api.joinError!), findsOneWidget);
+    await tester.tap(find.byTooltip('关闭提示'));
+    await tester.pumpAndSettle();
+    expect(find.text(api.joinError!), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 }

@@ -9,6 +9,7 @@ import 'package:p2wlan_flutter_client/app/app_tokens.dart';
 import 'package:p2wlan_flutter_client/core/api/control_api.dart';
 import 'package:p2wlan_flutter_client/core/api/diagnostics_api.dart';
 import 'package:p2wlan_flutter_client/core/capabilities/platform_capabilities.dart';
+import 'package:p2wlan_flutter_client/core/daemon/daemon_controller.dart';
 import 'package:p2wlan_flutter_client/core/models/diagnostics_models.dart';
 import 'package:p2wlan_flutter_client/core/security/secure_token_repository.dart';
 import 'package:p2wlan_flutter_client/core/state/settings_store.dart';
@@ -479,9 +480,11 @@ void main() {
       tokenRepository: _ThrowingTokenRepository(),
     );
     await tester.runAsync(settingsStore.load);
+    final diagnosticsApi = _OfflineDiagnosticsApi();
     final statusStore = StatusStore(
       settingsStore: settingsStore,
-      diagnosticsApi: _OfflineDiagnosticsApi(),
+      diagnosticsApi: diagnosticsApi,
+      daemonController: _FakeDaemonController(diagnosticsApi),
     );
     addTearDown(() {
       statusStore.dispose();
@@ -650,6 +653,24 @@ class _ThrowingTokenRepository implements SecureTokenRepository {
   Future<void> clear() async {}
 }
 
+class _FakeDaemonController extends DaemonController {
+  _FakeDaemonController(DiagnosticsApi api) : super(diagnosticsApi: api);
+
+  @override
+  Future<DaemonCommandResult> start(AppSettings settings) async {
+    return const DaemonCommandResult(ok: true, message: 'fake start');
+  }
+
+  @override
+  Future<DaemonCommandResult> stop(String diagnosticsUrl) async {
+    return const DaemonCommandResult(
+      ok: true,
+      message: 'fake stop',
+      graceful: true,
+    );
+  }
+}
+
 Future<_Stores> _makeStores() async {
   final tempDir = await Directory.systemTemp.createTemp('p2wlan_login_test_');
   final settingsStore = SettingsStore(
@@ -661,6 +682,7 @@ Future<_Stores> _makeStores() async {
   final statusStore = StatusStore(
     settingsStore: settingsStore,
     diagnosticsApi: api,
+    daemonController: _FakeDaemonController(api),
   );
   return _Stores(tempDir, settingsStore, statusStore);
 }

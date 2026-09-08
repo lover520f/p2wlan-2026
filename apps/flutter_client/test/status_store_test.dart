@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:p2wlan_flutter_client/core/api/diagnostics_api.dart';
+import 'package:p2wlan_flutter_client/core/daemon/daemon_controller.dart';
 import 'package:p2wlan_flutter_client/core/models/diagnostics_models.dart';
 import 'package:p2wlan_flutter_client/core/security/secure_token_repository.dart';
 import 'package:p2wlan_flutter_client/core/state/settings_store.dart';
@@ -421,11 +422,9 @@ void main() {
         api,
         startupCatalogRefreshInterval: Duration.zero,
         startupCatalogRefreshTimeout: const Duration(seconds: 1),
+        authToken: 'managed-token',
       );
       addTearDown(stores.dispose);
-      await stores.settingsStore.updateSettings(
-        stores.settingsStore.settings.copyWith(authToken: 'managed-token'),
-      );
 
       await stores.statusStore.refreshUntilPeerCatalogSettled();
 
@@ -442,11 +441,9 @@ void main() {
       api,
       startupCatalogRefreshInterval: Duration.zero,
       startupCatalogRefreshTimeout: const Duration(milliseconds: 1),
+      authToken: 'managed-token',
     );
     addTearDown(stores.dispose);
-    await stores.settingsStore.updateSettings(
-      stores.settingsStore.settings.copyWith(authToken: 'managed-token'),
-    );
 
     final settling = stores.statusStore.refreshUntilPeerCatalogSettled(
       silent: true,
@@ -722,6 +719,18 @@ Future<DiagnosticsSnapshot> _loadFixture() async {
   return DiagnosticsSnapshot.fromJson(raw);
 }
 
+class _FakeDaemonController extends DaemonController {
+  _FakeDaemonController(DiagnosticsApi api) : super(diagnosticsApi: api);
+
+  @override
+  Future<DaemonCommandResult> start(AppSettings settings) async =>
+      const DaemonCommandResult(ok: true, message: 'fake start');
+
+  @override
+  Future<DaemonCommandResult> stop(String diagnosticsUrl) async =>
+      const DaemonCommandResult(ok: true, message: 'fake stop', graceful: true);
+}
+
 Future<_Stores> _makeStores(
   DiagnosticsApi api, {
   Duration maxSnapshotAge = StatusStore.defaultMaxSnapshotAge,
@@ -730,6 +739,8 @@ Future<_Stores> _makeStores(
       StatusStore.defaultStartupCatalogRefreshInterval,
   Duration startupCatalogRefreshTimeout =
       StatusStore.defaultStartupCatalogRefreshTimeout,
+  String authToken = '',
+  DaemonController? daemonController,
 }) async {
   final tempDir = await Directory.systemTemp.createTemp('p2wlan_status_store_');
   final settingsStore = SettingsStore(
@@ -737,9 +748,15 @@ Future<_Stores> _makeStores(
     tokenRepository: InMemorySecureTokenRepository(),
   );
   await settingsStore.load();
+  if (authToken.isNotEmpty) {
+    await settingsStore.updateSettings(
+      settingsStore.settings.copyWith(authToken: authToken),
+    );
+  }
   final statusStore = StatusStore(
     settingsStore: settingsStore,
     diagnosticsApi: api,
+    daemonController: daemonController ?? _FakeDaemonController(api),
     maxSnapshotAge: maxSnapshotAge,
     enableFreshnessTimer: true,
     routeVerificationInterval: routeVerificationInterval,

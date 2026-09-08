@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -6,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../api/diagnostics_api.dart';
 import '../models/diagnostics_models.dart';
 import '../platform/android_platform.dart';
+import '../rooms/room_profiles.dart';
 import '../security/local_config_secret.dart';
 import '../security/secure_token_repository.dart';
 
@@ -17,6 +19,14 @@ class SettingsStore extends ChangeNotifier {
 
   final File? _settingsFileOverride;
   late final SecureTokenRepository _tokenRepository;
+
+  Future<void> Function(
+    AppSettings current,
+    AppSettings next,
+    Future<void> Function() commit,
+  )?
+  applySessionChange;
+  Future<void>? _pendingSettingsWrite;
 
   AppSettings _settings = const AppSettings();
   var _loaded = false;
@@ -174,11 +184,37 @@ class SettingsStore extends ChangeNotifier {
     await updateSettings(nextSettings);
   }
 
-  Future<void> updateSettings(AppSettings settings) async {
+  Future<void> updateSettings(AppSettings settings) {
+    final expectedSession = accountSessionKey(_settings);
+    Future<void> apply() {
+      if (accountSessionKey(settings) == expectedSession &&
+          accountSessionKey(_settings) != expectedSession) {
+        throw const FormatException('账号已变化，未保存旧账号设置。请重新打开页面后操作。');
+      }
+      return _updateSettings(settings);
+    }
+
+    final previousWrite = _pendingSettingsWrite;
+    final write = previousWrite == null
+        ? apply()
+        : previousWrite.then((_) => apply());
+    final tail = write.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    _pendingSettingsWrite = tail;
+    unawaited(
+      tail.then((_) {
+        if (identical(_pendingSettingsWrite, tail)) {
+          _pendingSettingsWrite = null;
+        }
+      }),
+    );
+    return write;
+  }
+
+  Future<void> _updateSettings(AppSettings settings) async {
     final normalizedDeviceName = settings.deviceName.trim().isEmpty
         ? await resolveDefaultDeviceName()
         : settings.deviceName.trim();
-    final normalizedSettings = settings.copyWith(
+    var normalizedSettings = settings.copyWith(
       diagnosticsUrl: normalizeDiagnosticsUrl(settings.diagnosticsUrl),
       controlServer: normalizeControlServer(settings.controlServer),
       networkId: settings.networkId.trim().isEmpty
@@ -202,9 +238,38 @@ class SettingsStore extends ChangeNotifier {
     if (errors.isNotEmpty) {
       throw FormatException(errors.join('\n'));
     }
-    _settings = normalizedSettings;
-    await _save();
-    notifyListeners();
+    final previous = _settings;
+    final sessionChanged =
+        accountSessionKey(previous) != accountSessionKey(normalizedSettings);
+    if (sessionChanged) {
+      if (!normalizedSettings.manualMode) {
+        if (isRoomNetwork(normalizedSettings.networkId)) {
+          normalizedSettings = personalNetworkSettings(normalizedSettings);
+        }
+        normalizedSettings = normalizedSettings.copyWith(
+          virtualIp: '',
+          personalVirtualIp: '',
+          manualMode: false,
+        );
+      }
+    }
+    Future<void> commit() async {
+      _settings = normalizedSettings;
+      try {
+        await _save();
+      } catch (_) {
+        _settings = previous;
+        rethrow;
+      }
+      notifyListeners();
+    }
+
+    final transition = applySessionChange;
+    if (sessionChanged && transition != null) {
+      await transition(previous, normalizedSettings, commit);
+    } else {
+      await commit();
+    }
   }
 
   /// Encrypt and persist the macOS administrator password in the local

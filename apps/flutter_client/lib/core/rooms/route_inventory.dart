@@ -128,3 +128,12 @@ NativeIpv4Route? findNativeRoomConflict(
   }
   return null;
 }
+
+String nativeRoomConflictMessage(String roomCidr, NativeIpv4Route conflict) {
+  final interface = conflict.interfaceName.isEmpty
+      ? '未标明接口的路由'
+      : '接口 ${conflict.interfaceName}';
+  return '房间网段 $roomCidr 与本机 $interface 的 ${conflict.cidr} 重叠。'
+      '房间已加入，但尚未连接；请先断开使用该网段的其他 VPN，或检查旧连接是否已退出。'
+      '不会自动删除现有路由。';
+}

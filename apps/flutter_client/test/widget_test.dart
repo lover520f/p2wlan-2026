@@ -121,17 +121,18 @@ void main() {
         of: find.byType(NavigationBar),
         matching: find.byType(NavigationDestination),
       ),
-      findsNWidgets(3),
+      findsNWidgets(4),
     );
     expect(find.text('首页'), findsWidgets);
     expect(find.text('设备'), findsWidgets);
+    expect(find.text('互联'), findsWidgets);
     expect(find.text('设置'), findsOneWidget);
     // No permanent "More" destination.
     expect(find.text('更多'), findsNothing);
     // Mobile: no top-bar status badge; only the hero carries one.
     expect(find.byType(StatusBadge), findsOneWidget);
 
-    // Medium tablet / small window: a labeled rail with the three primary
+    // Medium tablet / small window: a labeled rail with the primary
     // sections. Troubleshooting stays contextual and is not a permanent
     // sidebar destination.
     tester.view.physicalSize = const Size(700, 1000);
@@ -146,6 +147,7 @@ void main() {
     expect(find.byType(NavigationBar), findsNothing);
     expect(find.text('首页'), findsOneWidget);
     expect(find.text('设备'), findsOneWidget);
+    expect(find.text('互联'), findsOneWidget);
     expect(find.text('故障排查'), findsNothing);
     expect(find.text('设置'), findsOneWidget);
     expect(find.text('隧道'), findsNothing);
@@ -170,6 +172,7 @@ void main() {
     expect(find.text('P2WLAN'), findsWidgets);
     expect(find.text('首页'), findsOneWidget);
     expect(find.text('设备'), findsOneWidget);
+    expect(find.text('互联'), findsOneWidget);
     expect(find.text('故障排查'), findsNothing);
     expect(find.text('设置'), findsOneWidget);
     expect(find.text('隧道'), findsNothing);
@@ -273,7 +276,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(DiagnosticsPage), findsOneWidget);
-      // The bottom bar stays at exactly three destinations — no fake fourth
+      // The bottom bar stays at exactly four destinations — no fake fifth
       // tab, no More destination.
       expect(find.byType(NavigationBar), findsOneWidget);
       expect(
@@ -281,7 +284,7 @@ void main() {
           of: find.byType(NavigationBar),
           matching: find.byType(NavigationDestination),
         ),
-        findsNWidgets(3),
+        findsNWidgets(4),
       );
       expect(find.text('更多'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -395,7 +398,7 @@ void main() {
         of: find.byType(NavigationBar),
         matching: find.byType(NavigationDestination),
       ),
-      findsNWidgets(3),
+      findsNWidgets(4),
     );
 
     await tester.tap(find.text('首页').last);
@@ -455,7 +458,7 @@ void main() {
     await tester.pump();
     expect(find.byType(SettingsPage), findsOneWidget);
 
-    // 700 → 390: section survives, three-item bottom bar.
+    // 700 → 390: section survives, four-item bottom bar.
     tester.view.physicalSize = const Size(390, 844);
     await tester.pump();
     await tester.pump();
@@ -465,7 +468,7 @@ void main() {
         of: find.byType(NavigationBar),
         matching: find.byType(NavigationDestination),
       ),
-      findsNWidgets(3),
+      findsNWidgets(4),
     );
     expect(tester.takeException(), isNull);
   });

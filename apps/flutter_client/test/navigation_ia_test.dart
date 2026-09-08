@@ -4,10 +4,11 @@ import 'package:p2wlan_flutter_client/app/navigation_model.dart';
 
 void main() {
   group('P2WlanSection — primary IA', () {
-    test('primary user-level destinations are Home, Devices, Settings', () {
+    test('primary user-level destinations are Home, Devices, Interconnect, Settings', () {
       expect(P2WlanSection.primary, [
         P2WlanSection.home,
         P2WlanSection.devices,
+        P2WlanSection.interconnect,
         P2WlanSection.settings,
       ]);
     });
@@ -26,23 +27,21 @@ void main() {
 
     test('sidebar groups match the desktop model', () {
       expect(P2WlanSection.sidebarGroups, [
-        [P2WlanSection.home, P2WlanSection.devices],
+        [P2WlanSection.home, P2WlanSection.devices, P2WlanSection.interconnect],
         [P2WlanSection.settings],
       ]);
     });
   });
 
   group('P2WlanSection — mobile model', () {
-    test(
-      'permanent bottom-bar destinations are exactly Home, Devices, Settings',
-      () {
-        expect(P2WlanSection.mobilePrimary, [
-          P2WlanSection.home,
-          P2WlanSection.devices,
-          P2WlanSection.settings,
-        ]);
-      },
-    );
+    test('permanent bottom-bar destinations are exactly Home, Devices, Interconnect, Settings', () {
+      expect(P2WlanSection.mobilePrimary, [
+        P2WlanSection.home,
+        P2WlanSection.devices,
+        P2WlanSection.interconnect,
+        P2WlanSection.settings,
+      ]);
+    });
 
     test('troubleshooting is not a permanent mobile tab', () {
       expect(
@@ -73,6 +72,7 @@ void main() {
         containsAll([
           P2WlanSection.home,
           P2WlanSection.devices,
+          P2WlanSection.interconnect,
           P2WlanSection.settings,
         ]),
       );

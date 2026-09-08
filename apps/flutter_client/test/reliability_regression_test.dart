@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:p2wlan_flutter_client/core/api/diagnostics_api.dart';
+import 'package:p2wlan_flutter_client/core/daemon/daemon_controller.dart';
 import 'package:p2wlan_flutter_client/core/models/diagnostics_models.dart';
 import 'package:p2wlan_flutter_client/core/security/secure_token_repository.dart';
 import 'package:p2wlan_flutter_client/core/state/settings_store.dart';
@@ -204,14 +205,11 @@ void main() {
   test(
     'startup catalog retries health failures until the service binds',
     () async {
-      final harness = await _Harness.create();
-      addTearDown(harness.dispose);
-      await harness.settings.updateSettings(
-        harness.settings.settings.copyWith(
-          authToken: 'fixture-token',
-          manualMode: false,
-        ),
+      final harness = await _Harness.create(
+        authToken: 'fixture-token',
+        manualMode: false,
       );
+      addTearDown(harness.dispose);
       harness.api.healthResponses.addAll([false, false, true]);
       await harness.store.refreshUntilPeerCatalogSettled();
       expect(harness.api.healthCalls, greaterThanOrEqualTo(3));
@@ -349,6 +347,18 @@ class _Api extends DiagnosticsApi {
   }
 }
 
+class _FakeDaemonController extends DaemonController {
+  _FakeDaemonController(DiagnosticsApi api) : super(diagnosticsApi: api);
+
+  @override
+  Future<DaemonCommandResult> start(AppSettings settings) async =>
+      const DaemonCommandResult(ok: true, message: 'fake start');
+
+  @override
+  Future<DaemonCommandResult> stop(String diagnosticsUrl) async =>
+      const DaemonCommandResult(ok: true, message: 'fake stop', graceful: true);
+}
+
 class _Harness {
   _Harness(this.directory, this.settings, this.api, this.store);
   final Directory directory;
@@ -356,7 +366,10 @@ class _Harness {
   final _Api api;
   final StatusStore store;
 
-  static Future<_Harness> create() async {
+  static Future<_Harness> create({
+    String authToken = '',
+    bool manualMode = true,
+  }) async {
     final directory = await Directory.systemTemp.createTemp(
       'p2wlan_reliability_',
     );
@@ -365,6 +378,14 @@ class _Harness {
       tokenRepository: InMemorySecureTokenRepository(),
     );
     await settings.load();
+    if (authToken.isNotEmpty || !manualMode) {
+      await settings.updateSettings(
+        settings.settings.copyWith(
+          authToken: authToken,
+          manualMode: manualMode,
+        ),
+      );
+    }
     final raw = jsonDecode(
       await File('test/fixtures/status_connected.json').readAsString(),
     ) as Map<String, dynamic>;
@@ -372,6 +393,7 @@ class _Harness {
     final store = StatusStore(
       settingsStore: settings,
       diagnosticsApi: api,
+      daemonController: _FakeDaemonController(api),
       enableEventPolling: false,
       startupCatalogRefreshInterval: const Duration(milliseconds: 1),
       startupCatalogRefreshTimeout: const Duration(milliseconds: 100),

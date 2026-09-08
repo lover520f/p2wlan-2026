@@ -366,10 +366,7 @@ extension DaemonControllerDiagnosticsPaths on DaemonController {
         : File(
             '${_configBaseDir().path}${Platform.pathSeparator}p2wlan-config.json',
           );
-    if (!isRoomNetwork(settings.networkId)) return personal;
-    return File(
-      '${personal.parent.path}${Platform.pathSeparator}rooms${Platform.pathSeparator}${roomProfileId(settings)}${Platform.pathSeparator}p2wlan-config.json',
-    );
+    return networkConfigFile(personal, settings);
   }
 
   Directory _configBaseDir() {

@@ -206,25 +206,21 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
 
   Future<void> _logout() async {
     final settings = _settingsStore.settings;
-    if ((isRoomNetwork(settings.networkId) ||
-            _statusStore.parallelRooms.hasSessions) &&
-        _capabilities.canActAsLocalVpnNode) {
-      final stopped = await _statusStore.stopDaemon();
-      if (!stopped.ok) {
-        _messengerKey.currentState?.showSnackBar(
-          const SnackBar(content: Text('本地房间网络未能停止，退出登录已取消。请先停止本地网络服务。')),
-        );
-        return;
-      }
+    try {
+      await _settingsStore.updateSettings(
+        (isRoomNetwork(settings.networkId)
+                ? personalNetworkSettings(settings)
+                : settings)
+            .copyWith(authToken: '', manualMode: false),
+      );
+    } on AccountSessionChangeException catch (error) {
+      _messengerKey.currentState?.showSnackBar(
+        SnackBar(content: Text(error.message)),
+      );
+      return;
     }
     _pendingRoomLink = null;
-    await _settingsStore.updateSettings(
-      (isRoomNetwork(settings.networkId)
-              ? personalNetworkSettings(settings)
-              : settings)
-          .copyWith(authToken: '', manualMode: false),
-    );
-    await _statusStore.refresh();
+    _navigatorKey.currentState?.popUntil((route) => route.isFirst);
     if (mounted) {
       setState(() {
         _authenticated = false;

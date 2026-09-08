@@ -100,22 +100,28 @@ class MethodChannelAndroidVpnTransport
   @override
   Future<AndroidVpnStatus> status() async {
     final value = await channel.invokeMethod<Map<Object?, Object?>>('status');
+    if (value == null || value['nativeRunning'] is! bool) {
+      throw PlatformException(
+        code: 'invalid_vpn_status',
+        message: '无法确认 Android VPN 的运行状态',
+      );
+    }
     int? integer(String key) {
-      final raw = value?[key];
+      final raw = value[key];
       return raw is num ? raw.toInt() : null;
     }
 
     return AndroidVpnStatus(
-      serviceRunning: value?['serviceRunning'] == true,
-      nativeRunning: value?['nativeRunning'] == true,
-      nativeReady: value?['nativeReady'] == true,
-      nativeError: value?['nativeError']?.toString(),
+      serviceRunning: value['serviceRunning'] == true,
+      nativeRunning: value['nativeRunning'] == true,
+      nativeReady: value['nativeReady'] == true,
+      nativeError: value['nativeError']?.toString(),
       serviceIncarnation: integer('serviceIncarnation'),
       bridgeIncarnation: integer('bridgeIncarnation'),
       lifecycleGeneration: integer('lifecycleGeneration'),
-      permissionState: value?['permissionState']?.toString(),
-      lastTransition: value?['lastTransition']?.toString(),
-      lastResult: value?['lastResult']?.toString(),
+      permissionState: value['permissionState']?.toString(),
+      lastTransition: value['lastTransition']?.toString(),
+      lastResult: value['lastResult']?.toString(),
     );
   }
 }

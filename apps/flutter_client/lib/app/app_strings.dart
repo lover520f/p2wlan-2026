@@ -994,6 +994,7 @@ class AppStrings {
     return switch (sectionName) {
       'home' => home,
       'devices' => devices,
+      'interconnect' => isZh ? '互联' : 'Interconnect',
       'troubleshooting' => troubleshooting,
       'settings' => settings,
       _ => sectionName,
