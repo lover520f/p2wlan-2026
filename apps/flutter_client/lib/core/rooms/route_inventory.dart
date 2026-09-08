@@ -124,7 +124,12 @@ NativeIpv4Route? findNativeRoomConflict(
         route.interfaceName == authenticatedInterface) {
       continue;
     }
-    if (nativeRouteOverlaps(cidr, route.cidr)) return route;
+    if (!nativeRouteOverlaps(cidr, route.cidr)) continue;
+    // A new room route wins over a covering route by longest-prefix match.
+    // Equal or more-specific routes can still divert room traffic.
+    final roomPrefix = int.parse(cidr.split('/').last);
+    final routePrefix = int.parse(route.cidr.split('/').last);
+    if (routePrefix >= roomPrefix) return route;
   }
   return null;
 }

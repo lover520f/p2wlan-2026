@@ -14,22 +14,19 @@ void main() {
     expect(message, contains('不会自动删除现有路由'));
   });
 
-  test('Linux routes include wider LAN and policy tables', () {
+  test('Linux wider routes allow a more-specific room route', () {
     final routes = parseJsonRouteInventory('''[
       {"dst":"default","gateway":"192.168.1.1","dev":"eth0"},
       {"dst":"10.0.0.0/8","dev":"eth1","table":"custom"},
       {"type":"local","dst":"127.0.0.1","dev":"lo","table":"local"}
     ]''');
     expect(routes.length, 2);
-    expect(
-      findNativeRoomConflict('10.21.1.0/24', routes)?.interfaceName,
-      'eth1',
-    );
+    expect(findNativeRoomConflict('10.21.1.0/24', routes), isNull);
   });
 
   test('blackhole route without interface still blocks conflicting room', () {
     final routes = parseJsonRouteInventory(
-      '[{"type":"blackhole","dst":"10.21.0.0/16"}]',
+      '[{"type":"blackhole","dst":"10.21.9.0/24"}]',
     );
     expect(findNativeRoomConflict('10.21.9.0/24', routes), isNotNull);
   });
@@ -77,7 +74,7 @@ default            192.168.1.1         UGScg                 en0
   test('only authenticated same-instance interface is exempted', () {
     const routes = [
       NativeIpv4Route('10.21.1.0/24', 'utun3'),
-      NativeIpv4Route('10.21.0.0/16', 'utun4'),
+      NativeIpv4Route('10.21.1.128/25', 'utun4'),
     ];
     expect(
       findNativeRoomConflict(
@@ -111,12 +108,30 @@ default            192.168.1.1         UGScg                 en0
     expect(nativeRouteOverlaps('10.21.1.0/24', '10.21.1.17/24'), isTrue);
   });
 
-  test('split-default VPN route remains a conflict', () {
+  test('split-default VPN route allows a more-specific room route', () {
     final routes = parseJsonRouteInventory(
       '[{"dst":"0.0.0.0/1","dev":"tun0"}]',
     );
-    expect(findNativeRoomConflict('10.21.2.0/24', routes), isNotNull);
+    expect(findNativeRoomConflict('10.21.2.0/24', routes), isNull);
   });
+
+  test(
+    'macOS broad VPN route coexists with room but does not hide conflicts',
+    () {
+      final routes = parseMacosRouteInventory("""
+Destination Gateway Flags Netif
+8/5 172.18.0.1 UGSc utun97
+""");
+      expect(findNativeRoomConflict('10.21.1.0/24', routes), isNull);
+      for (final cidr in ['10.21.1.0/24', '10.21.1.128/25', '10.21.1.7/32']) {
+        final conflict = NativeIpv4Route(cidr, 'utun4');
+        expect(
+          findNativeRoomConflict('10.21.1.0/24', [...routes, conflict]),
+          same(conflict),
+        );
+      }
+    },
+  );
 
   test('malformed inventories are not silently treated as conflict-free', () {
     for (final text in [
