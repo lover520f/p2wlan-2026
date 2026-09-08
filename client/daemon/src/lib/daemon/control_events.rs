@@ -2020,6 +2020,17 @@ impl Daemon {
                     "remote incarnation candidate replay",
                 )
                 .await;
+                if let Some(peer_info) = self.control.peers().await.get(&peer_id).cloned() {
+                    if peer_info.online && self.should_start_initiator_handshake(&peer_info) {
+                        if let Some(reservation) = self
+                            .reserve_event_initiator_handshake(&peer_id)
+                            .into_reservation()
+                        {
+                            self.run_event_initiator_handshake(peer_info, reservation)
+                                .await;
+                        }
+                    }
+                }
             }
 
             let Some(next) = self
@@ -2877,6 +2888,13 @@ impl Daemon {
                                         Some(format!("peer={}", peer_info.node_id)),
                                     );
                                 }
+                            } else {
+                                schedule_candidate_republication(
+                                    daemon,
+                                    &mut responder_work,
+                                    peer_info.node_id.clone(),
+                                    "responder peer join",
+                                );
                             }
 
                             if self.dns.is_enabled() {
@@ -3048,8 +3066,8 @@ impl Daemon {
                                 )
                                 .await;
                         }
-                        if was_offline || update.public_key_changed {
-                            // A peer that comes back online has lost its copy of
+                        if was_offline || update.public_key_changed || update.endpoint_changed {
+                            // A peer that comes back online or whose endpoint changed has lost its copy of
                             // our candidate snapshot. Replay it even when our
                             // local snapshot/hash is unchanged; waiting for the
                             // next NAT/ STUN change recreates the Air-first cold

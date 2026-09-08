@@ -265,12 +265,12 @@ def main() -> int:
         for name, entry in lab.daemons.items():
             log_path = entry['directory'] / 'p2wlan-daemon.log'
             if log_path.exists():
-                lines = log_path.read_text().splitlines()[-40:]
+                lines = log_path.read_text().splitlines()[-120:]
                 print(f"=== {name} daemon log tail ===", file=sys.stderr)
                 print("\n".join(lines), file=sys.stderr)
             console_path = lab.root / (name + '.console')
             if console_path.exists():
-                lines = console_path.read_text().splitlines()[-40:]
+                lines = console_path.read_text().splitlines()[-120:]
                 if lines:
                     print(f"=== {name} console tail ===", file=sys.stderr)
                     print("\n".join(lines), file=sys.stderr)
