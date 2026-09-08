@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../../core/capabilities/platform_capabilities.dart';
 import '../../core/rooms/room_api.dart';
 import '../../core/rooms/room_profiles.dart';
+import '../../core/rooms/parallel_rooms.dart';
 import '../../core/state/settings_store.dart';
 import '../../core/state/status_store.dart';
 
@@ -42,6 +43,12 @@ class _RoomsPageState extends State<RoomsPage> {
   Timer? _timer;
   int _generation = 0;
 
+  ParallelRooms get _parallel => widget.statusStore.parallelRooms;
+
+  void _parallelChanged() {
+    if (mounted) setState(() {});
+  }
+
   bool get _canConnect =>
       (widget.capabilities ?? PlatformCapabilities.current())
           .canActAsLocalVpnNode;
@@ -59,6 +66,7 @@ class _RoomsPageState extends State<RoomsPage> {
   @override
   void initState() {
     super.initState();
+    _parallel.addListener(_parallelChanged);
     final settings = widget.settingsStore.settings;
     try {
       if (settings.authToken.trim().isEmpty) {
@@ -88,6 +96,7 @@ class _RoomsPageState extends State<RoomsPage> {
 
   @override
   void dispose() {
+    _parallel.removeListener(_parallelChanged);
     _timer?.cancel();
     _generation++;
     if (widget.api == null) _apiInstance?.close();
@@ -101,6 +110,12 @@ class _RoomsPageState extends State<RoomsPage> {
     final selected = _selectedId;
     try {
       final rooms = await _api.list();
+      if (!_sameSession) return;
+      if (_parallel.supported) {
+        for (final room in rooms) {
+          unawaited(_parallel.recover(room));
+        }
+      }
       final id = rooms.any((room) => room.id == selected)
           ? selected
           : (rooms.isEmpty ? null : rooms.first.id);
@@ -284,28 +299,54 @@ class _RoomsPageState extends State<RoomsPage> {
 
   Future<void> _connect(FriendRoom? room) async {
     if (!_canConnect || _busy) return;
+    if (_parallel.supported && room != null) {
+      await _run(() async {
+        if (widget.settingsStore.settings.networkId == room.id) {
+          final stopped = await widget.statusStore.stopPrimaryDaemon();
+          if (!stopped.ok) throw const RoomException('旧的单房间运行时未能停止');
+          await widget.settingsStore.updateSettings(
+            personalNetworkSettings(widget.settingsStore.settings),
+          );
+        }
+        if (!mounted || !_sameSession) return;
+        final result = await _parallel.connect(room);
+        if (!result.ok) throw RoomException(result.message);
+      }, success: '房间已独立启动，不影响其他并行房间');
+      return;
+    }
     final name = room?.name ?? '个人网络';
     if (!await _confirm(
           '连接$name',
-          '将先断开当前虚拟网络，再连接$name。已加入的其他房间会保留，本次只启用这个网络。',
+          _parallel.supported
+              ? '将启动个人网络，已连接的并行房间保持运行。'
+              : '此平台仍使用单活动网络，将断开当前网络后连接$name。',
         ) ||
         !mounted) {
       return;
     }
     await _run(() async {
-      final stopped = await widget.statusStore.stopDaemon();
-      if (!stopped.ok) throw const RoomException('旧网络未能停止，未切换房间。请先停止本地网络服务。');
+      final stopped = await widget.statusStore.stopPrimaryDaemon();
+      if (!stopped.ok) throw const RoomException('旧网络未能停止，未切换网络');
       if (!mounted || !_sameSession) return;
       final current = widget.settingsStore.settings;
       final next = room == null
-          ? personalNetworkSettings(current)
+          ? (isRoomNetwork(current.networkId)
+                ? personalNetworkSettings(current)
+                : current)
           : selectRoomSettings(current, room);
       if (room != null) roomProfileId(next);
       await widget.settingsStore.updateSettings(next);
-      if (!mounted) return;
+      if (!mounted || !_sameSession) return;
       final started = await widget.statusStore.startDaemon();
       if (!started.ok) throw RoomException(started.message);
     }, success: '网络连接已启动');
+  }
+
+  Future<void> _disconnectRoom(FriendRoom room) async {
+    await _run(() async {
+      final result = await _parallel.disconnect(room.id);
+      if (!result.ok) throw RoomException(result.message);
+    }, success: '已断开此房间，其他房间保持运行');
   }
 
   Future<void> _edit(FriendRoom room, bool password) async {
@@ -477,9 +518,11 @@ class _RoomsPageState extends State<RoomsPage> {
       return;
     }
     await _run(() async {
+      final result = await _parallel.disconnect(room.id);
+      if (!result.ok) throw const RoomException('本地并行房间未能停止，尚未退出');
       if (widget.settingsStore.settings.networkId == room.id) {
         if (_canConnect) {
-          final stopped = await widget.statusStore.stopDaemon();
+          final stopped = await widget.statusStore.stopPrimaryDaemon();
           if (!stopped.ok) throw const RoomException('本地房间网络无法停止，尚未退出房间');
         }
       }
@@ -535,7 +578,8 @@ class _RoomsPageState extends State<RoomsPage> {
               overflow: TextOverflow.ellipsis,
             ),
             subtitle: Text(
-              '${room.code} · ${room.isOwner ? '房主' : '成员'}\n${room.cidr}',
+              '${room.code} · ${room.isOwner ? '房主' : '成员'}\n${room.cidr}'
+              '${_parallel.session(room.id) == null ? '' : ' · 独立运行时'}',
             ),
             isThreeLine: true,
             trailing: room.locked
@@ -573,7 +617,10 @@ class _RoomsPageState extends State<RoomsPage> {
 
   Widget _roomDetails(RoomRoster roster) {
     final room = roster.room;
-    final active = widget.settingsStore.settings.networkId == room.id;
+    final connection = _parallel.session(room.id);
+    final active =
+        connection != null ||
+        widget.settingsStore.settings.networkId == room.id;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -596,9 +643,23 @@ class _RoomsPageState extends State<RoomsPage> {
                   children: [
                     if (_canConnect)
                       FilledButton.icon(
-                        onPressed: _busy ? null : () => _connect(room),
-                        icon: const Icon(Icons.lan_outlined),
-                        label: Text(active ? '重新连接房间' : '连接房间网络'),
+                        onPressed: _busy
+                            ? null
+                            : () => connection != null
+                                  ? _disconnectRoom(room)
+                                  : _connect(room),
+                        icon: Icon(
+                          connection == null
+                              ? Icons.lan_outlined
+                              : Icons.link_off,
+                        ),
+                        label: Text(
+                          connection != null
+                              ? '断开此房间'
+                              : active
+                              ? (_parallel.supported ? '迁移为并行连接' : '重新连接房间')
+                              : '连接房间网络',
+                        ),
                       ),
                     OutlinedButton.icon(
                       onPressed: _busy
@@ -624,9 +685,16 @@ class _RoomsPageState extends State<RoomsPage> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  active
-                      ? '这是当前选择的网络；实际在线状态以设备页为准。'
-                      : '加入记录已保存，点击连接后才会注册本设备并分配房间 IP。',
+                  connection != null
+                      ? '${connection.phase.name} · ${connection.snapshot?.virtualIp ?? '等待地址'}'
+                            '\n${connection.message ?? '独立网卡、连接及路由；断开本房间不会停止其他房间。'}'
+                      : active
+                      ? (_parallel.supported
+                            ? '这是旧的单活动网络，连接后迁移为独立运行时。'
+                            : '这是当前选择的单活动网络。')
+                      : _parallel.supported
+                      ? '点击连接会独立注册本设备，并与其他已连接房间同时运行。'
+                      : '当前平台仍为单活动网络，不支持多个房间同时联网。',
                 ),
                 if (!_canConnect) const Text('此平台仅支持房间管理，不能创建本地虚拟网卡。'),
                 if (room.isOwner) ...[
@@ -840,8 +908,10 @@ class _RoomsPageState extends State<RoomsPage> {
                         style: Theme.of(context).textTheme.headlineSmall,
                       ),
                       const SizedBox(height: 8),
-                      const Text(
-                        '每人创建一个房间，可以加入多个房间。当前版本每台设备同时连接一个网络，可随时切换，个人网络配置会保留。',
+                      Text(
+                        _parallel.supported
+                            ? '每人创建一个房间，可同时连接多个房间；个人网络配置保持独立。'
+                            : '每人创建一个房间，可以加入多个房间；此平台目前仍为单活动网络。',
                       ),
                       const SizedBox(height: 20),
                       Wrap(

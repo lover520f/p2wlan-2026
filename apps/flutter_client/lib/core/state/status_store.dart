@@ -9,6 +9,8 @@ import '../daemon/daemon_controller.dart';
 import '../lifecycle/mobile_lifecycle_coordinator.dart';
 import '../models/diagnostics_models.dart';
 import 'settings_store.dart';
+import '../rooms/parallel_rooms.dart';
+import '../rooms/desktop_room_runtime.dart';
 
 class StatusStore extends ChangeNotifier {
   StatusStore({
@@ -16,6 +18,7 @@ class StatusStore extends ChangeNotifier {
     required this.diagnosticsApi,
     DaemonController? daemonController,
     MobileLifecycleCoordinator? lifecycleCoordinator,
+    ParallelRooms? parallelRooms,
     this.autoRefreshInterval = defaultActivePollingInterval,
     this.backgroundRefreshInterval = defaultBackgroundPollingInterval,
     this.maxSnapshotAge = defaultMaxSnapshotAge,
@@ -25,7 +28,13 @@ class StatusStore extends ChangeNotifier {
     this.startupCatalogRefreshInterval = defaultStartupCatalogRefreshInterval,
     this.routeVerificationInterval = Duration.zero,
     this.metricsUpdateInterval = defaultMetricsUpdateInterval,
-  }) : lifecycleCoordinator =
+  }) : parallelRooms =
+           parallelRooms ??
+           ParallelRooms(
+             readSettings: () => settingsStore.settings,
+             runtimeFactory: DesktopRoomRuntime.new,
+           ),
+       lifecycleCoordinator =
            lifecycleCoordinator ?? MobileLifecycleCoordinator(),
        daemonController =
            daemonController ??
@@ -61,6 +70,7 @@ class StatusStore extends ChangeNotifier {
   static const _automaticHealthFailureThreshold = 3;
 
   final SettingsStore settingsStore;
+  final ParallelRooms parallelRooms;
   final DiagnosticsApi diagnosticsApi;
   final MobileLifecycleCoordinator lifecycleCoordinator;
   final DaemonController daemonController;
@@ -841,13 +851,35 @@ class StatusStore extends ChangeNotifier {
   }
 
   Future<DaemonCommandResult> startDaemon() async {
+    if (parallelRooms.connectionsPaused) {
+      return const DaemonCommandResult(
+        ok: false,
+        message: 'All networks are shutting down.',
+      );
+    }
     return _runDaemonCommand(
       () => daemonController.start(settingsStore.settings),
       settlePeerCatalog: true,
     );
   }
 
-  Future<DaemonCommandResult> stopDaemon() async {
+  Future<DaemonCommandResult> stopDaemon() =>
+      parallelRooms.withConnectionsPaused(() async {
+        final rooms = await parallelRooms.stopAll();
+        if (!rooms.ok) return rooms;
+        final primary = await stopPrimaryDaemon();
+        return DaemonCommandResult(
+          ok: primary.ok,
+          message: primary.message,
+          manualCommand: primary.manualCommand,
+          failureCode: primary.failureCode,
+          graceful: primary.graceful && rooms.graceful,
+          forcedTermination:
+              primary.forcedTermination || rooms.forcedTermination,
+        );
+      });
+
+  Future<DaemonCommandResult> stopPrimaryDaemon() async {
     cancelSpeedTest();
     return _runDaemonCommand(
       () => daemonController.stop(settingsStore.settings.diagnosticsUrl),
@@ -1028,6 +1060,7 @@ class StatusStore extends ChangeNotifier {
   }
 
   void _handleSettingsChanged() {
+    unawaited(parallelRooms.credentialsChanged());
     final nextDiagnosticsUrl = settingsStore.settings.diagnosticsUrl;
     if (nextDiagnosticsUrl == _lastDiagnosticsUrl) return;
     _lastDiagnosticsUrl = nextDiagnosticsUrl;
@@ -1053,6 +1086,7 @@ class StatusStore extends ChangeNotifier {
     if (_disposed) return;
     _disposed = true;
     cancelSpeedTest();
+    parallelRooms.dispose();
     lifecycleCoordinator.dispose();
     _eventLoopFuture = null;
     _timer?.cancel();

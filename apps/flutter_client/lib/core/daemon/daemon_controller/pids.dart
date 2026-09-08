@@ -93,6 +93,11 @@ extension DaemonControllerPids on DaemonController {
       final snapshot = await _diagnosticsApi.fetchStatus(diagnosticsUrl);
       final pid = snapshot.processId;
       if (pid == null) return null;
+      if (Platform.isWindows &&
+          await _windowsProcessName(pid) ==
+              '${DaemonController.daemonBinaryName}.exe') {
+        _authenticatedProcessId = pid;
+      }
       if (!await _processLooksLikeDaemon(pid)) return null;
       return pid;
     } catch (_) {
@@ -102,8 +107,9 @@ extension DaemonControllerPids on DaemonController {
 
   Future<bool> _processLooksLikeDaemon(int pid) async {
     final command = await _processCommandLine(pid);
-    if (command != null) return isP2wlanDaemonRuntimeCommandLine(command);
+    if (command != null) return _matchesInstance(command);
     return Platform.isWindows &&
+        (pid == _authenticatedProcessId || pid == _launchedProcessId) &&
         await _windowsProcessName(pid) ==
             '${DaemonController.daemonBinaryName}.exe';
   }
@@ -146,10 +152,6 @@ extension DaemonControllerPids on DaemonController {
   }
 
   Future<bool> _anyDaemonPidStillRunning(Iterable<int> pids) async {
-    if (Platform.isWindows) {
-      final running = (await _findWindowsDaemonPids()).toSet();
-      return pids.any(running.contains);
-    }
     for (final pid in pids.toSet()) {
       if (await _processLooksLikeDaemon(pid)) return true;
     }
@@ -203,69 +205,70 @@ extension DaemonControllerPids on DaemonController {
         final parsedPid = int.tryParse(trimmed.substring(0, splitAt).trim());
         if (parsedPid == null || parsedPid == currentPid) continue;
         final command = trimmed.substring(splitAt).trim();
-        if (isP2wlanDaemonRuntimeCommandLine(command) &&
+        if (_matchesInstance(command) &&
             command.contains('--diagnostics-bind') &&
             command.contains(bind)) {
           matches.add(parsedPid);
         }
       }
     }
-    return matches.length == 1 ? matches.single : null;
+    final verified = <int>[];
+    for (final candidate in matches) {
+      if (await _processLooksLikeDaemon(candidate)) verified.add(candidate);
+    }
+    return verified.length == 1 ? verified.single : null;
   }
 
   Future<List<int>> _findWindowsDaemonPids() async {
     if (!Platform.isWindows) return const <int>[];
     final result = await _runWindowsPowerShell(
-      r'''$processes = @(Get-CimInstance Win32_Process -Filter "Name = 'p2wlan-daemon.exe'" -ErrorAction SilentlyContinue | Where-Object { $null -eq $_.CommandLine -or $_.CommandLine -notmatch '(?i)(^|\s)--build-info(\s|$)' }); '''
-      r'''if ($processes.Count -eq 0) { $processes = @(Get-Process -Name p2wlan-daemon -ErrorAction SilentlyContinue) }; '''
-      r'''$processes | Select-Object -ExpandProperty ProcessId''',
+      r'''@(Get-CimInstance Win32_Process -Filter "Name = 'p2wlan-daemon.exe'" -ErrorAction SilentlyContinue) | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress''',
     );
     if (result.exitCode != 0) return const <int>[];
-    return result.stdout
-        .toString()
-        .split('\n')
-        .map((line) => int.tryParse(line.trim()))
-        .whereType<int>()
-        .toList();
+    try {
+      final decoded = jsonDecode(result.stdout.toString());
+      final rows = decoded is List ? decoded : [decoded];
+      return [
+        for (final row in rows)
+          if (row is Map &&
+              row['ProcessId'] is num &&
+              row['CommandLine'] is String &&
+              _matchesInstance(row['CommandLine'] as String))
+            (row['ProcessId'] as num).toInt(),
+      ];
+    } on FormatException {
+      return const <int>[];
+    }
   }
 
   Future<int?> _findSingleDaemonPid() async {
-    final matches = <int>[];
     if (Platform.isWindows) {
-      final result = await _runWindowsPowerShell(
-        r'''$processes = @(Get-CimInstance Win32_Process -Filter "Name = 'p2wlan-daemon.exe'" -ErrorAction SilentlyContinue | Where-Object { $null -eq $_.CommandLine -or $_.CommandLine -notmatch '(?i)(^|\s)--build-info(\s|$)' }); '''
-        r'''if ($processes.Count -eq 0) { $processes = @(Get-Process -Name p2wlan-daemon -ErrorAction SilentlyContinue) }; '''
-        r'''$processes | Select-Object -ExpandProperty ProcessId''',
-      );
-      if (result.exitCode != 0) return null;
-      for (final line in result.stdout.toString().split('\n')) {
-        final parsedPid = int.tryParse(line.trim());
-        if (parsedPid != null) matches.add(parsedPid);
-      }
-    } else {
-      final result = await Process.run('ps', [
-        'ax',
-        '-o',
-        'pid=',
-        '-o',
-        'command=',
-      ]);
-      if (result.exitCode != 0) return null;
-      final currentPid = pid;
-      for (final line in result.stdout.toString().split('\n')) {
-        final trimmed = line.trimLeft();
-        final splitAt = trimmed.indexOf(RegExp(r'\s'));
-        if (splitAt <= 0) continue;
-        final parsedPid = int.tryParse(trimmed.substring(0, splitAt).trim());
-        if (parsedPid == null || parsedPid == currentPid) continue;
-        final command = trimmed.substring(splitAt).trim();
-        if (isP2wlanDaemonRuntimeCommandLine(command)) {
-          matches.add(parsedPid);
-        }
-      }
+      final matches = await _findWindowsDaemonPids();
+      return matches.length == 1 ? matches.single : null;
+    }
+    final result = await Process.run('ps', [
+      'ax',
+      '-o',
+      'pid=',
+      '-o',
+      'command=',
+    ]);
+    if (result.exitCode != 0) return null;
+    final matches = <int>[];
+    for (final line in result.stdout.toString().split('\n')) {
+      final match = RegExp(r'^\s*(\d+)\s+(.+)$').firstMatch(line);
+      if (match == null || !_matchesInstance(match.group(2)!)) continue;
+      final candidate = int.tryParse(match.group(1)!);
+      if (candidate != null && candidate != pid) matches.add(candidate);
     }
     return matches.length == 1 ? matches.single : null;
   }
+
+  bool _matchesInstance(String command) => daemonCommandMatchesLog(
+    command,
+    '${_defaultLogDir().path}${Platform.pathSeparator}p2wlan-daemon.log',
+    windows: Platform.isWindows,
+  );
 
   Future<String?> _windowsProcessName(int processId) async {
     if (!Platform.isWindows) return null;
@@ -282,6 +285,7 @@ extension DaemonControllerPids on DaemonController {
   }
 
   Future<bool> _terminatePid(int pid, {bool allowElevation = true}) async {
+    if (!await _processLooksLikeDaemon(pid)) return false;
     if (Platform.isWindows) {
       // Keep taskkill hidden, then retry once through a hidden elevated
       // PowerShell if the old daemon was started with a higher integrity
@@ -311,13 +315,16 @@ extension DaemonControllerPids on DaemonController {
     }
     if (Platform.isMacOS && !_isRootUser()) {
       try {
+        final command = await _processCommandLine(pid);
+        if (command == null || !_matchesInstance(command)) return false;
+        final sameCommand =
+            '[ "\$(/bin/ps -p ${_shellQuote('$pid')} -o command= '
+            '2>/dev/null | /usr/bin/sed -e \'s/^[[:space:]]*//\' '
+            '-e \'s/[[:space:]]*\$//\')" = ${_shellQuote(command)} ]';
         await _startMacosElevated(
-          '/bin/kill -TERM ${_shellQuote('$pid')}; '
+          'if $sameCommand; then /bin/kill -TERM ${_shellQuote('$pid')}; fi; '
           '/bin/sleep 2; '
-          'if /bin/ps -p ${_shellQuote('$pid')} -o command= 2>/dev/null | '
-          '/usr/bin/grep -q p2wlan-daemon; then '
-          '/bin/kill -KILL ${_shellQuote('$pid')}; '
-          'fi',
+          'if $sameCommand; then /bin/kill -KILL ${_shellQuote('$pid')}; fi',
         );
         return await _waitForDaemonPidExit(pid, const Duration(seconds: 3));
       } catch (_) {
@@ -328,6 +335,7 @@ extension DaemonControllerPids on DaemonController {
   }
 
   Future<bool> _sendUnixSignal(int pid, String signal) async {
+    if (!await _processLooksLikeDaemon(pid)) return false;
     final result = await Process.run('kill', ['-$signal', '$pid']);
     return result.exitCode == 0;
   }

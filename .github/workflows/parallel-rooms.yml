@@ -2,14 +2,9 @@ name: Parallel Rooms
 
 on:
   push:
-    branches: [feat/parallel-rooms-20260908]
+    branches: [main, feat/parallel-rooms-20260908]
   pull_request:
     branches: [main]
-    paths:
-      - 'apps/flutter_client/**'
-      - 'client/**'
-      - '.fvmrc'
-      - '.github/workflows/parallel-rooms.yml'
   workflow_dispatch:
 
 permissions:
@@ -21,8 +16,12 @@ concurrency:
 
 jobs:
   lifecycle:
-    name: Parallel room lifecycle contracts
-    runs-on: ubuntu-latest
+    name: Parallel room lifecycle (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -34,40 +33,23 @@ jobs:
       - name: Resolve dependencies
         working-directory: apps/flutter_client
         run: flutter pub get
-      - name: Archive pinned formatter and analysis dependencies
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/parallel-rooms-20260908'
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -x "$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dart"
-          mkdir -p "$RUNNER_TEMP/offline-analysis/packages"
-          python3 - <<'PY'
-          import json, os, shutil
-          from pathlib import Path
-          from urllib.parse import urljoin, urlparse, unquote
-          config = Path('apps/flutter_client/.dart_tool/package_config.json').resolve()
-          data = json.loads(config.read_text())
-          destination = Path(os.environ['RUNNER_TEMP']) / 'offline-analysis'
-          for package in data['packages']:
-              if package['name'] == 'p2wlan_flutter_client':
-                  continue
-              source = Path(unquote(urlparse(urljoin(config.as_uri(), package['rootUri'])).path))
-              target = destination / 'packages' / package['name']
-              shutil.copytree(source, target, ignore=shutil.ignore_patterns('.git', 'build', '*.ttf', '*.otf', '*.woff', '*.woff2'))
-          (destination / 'package_config.json').write_text(json.dumps(data))
-          PY
-          tar -C "$FLUTTER_ROOT/bin/cache" -czf "$RUNNER_TEMP/p2wlan-dart-sdk.tar.gz" dart-sdk
-          tar -C "$RUNNER_TEMP/offline-analysis" -czf "$RUNNER_TEMP/p2wlan-analysis-deps.tar.gz" .
-      - name: Upload pinned offline analysis tools
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/parallel-rooms-20260908'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: p2wlan-offline-analysis-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/p2wlan-dart-sdk.tar.gz
-            ${{ runner.temp }}/p2wlan-analysis-deps.tar.gz
-          retention-days: 1
-      - name: Parallel lifecycle tests
+      - name: Format check
         working-directory: apps/flutter_client
-        if: '!cancelled()'
-        run: flutter test test/parallel_rooms_test.dart
+        run: dart format --output=none --set-exit-if-changed .
+      - name: Analyze
+        working-directory: apps/flutter_client
+        run: flutter analyze
+      - name: Parallel lifecycle and native route inventory tests
+        working-directory: apps/flutter_client
+        run: flutter test test/parallel_rooms_test.dart test/room_route_inventory_test.dart
+
+  required:
+    name: Parallel Rooms Required
+    if: always()
+    needs: [lifecycle]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce parallel room contracts
+        env:
+          LIFECYCLE_RESULT: ${{ needs.lifecycle.result }}
+        run: test "$LIFECYCLE_RESULT" = success

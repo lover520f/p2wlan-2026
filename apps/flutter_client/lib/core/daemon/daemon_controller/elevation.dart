@@ -67,11 +67,9 @@ extension DaemonControllerElevation on DaemonController {
     final repairAfter = repairOwnership.isEmpty
         ? ''
         : '; /bin/sleep 1; $repairOwnership';
-    final terminateExisting = _macosTerminateRecordedDaemonShell(pidPath);
     final rotateLog = _macosRotateLogShell(logPath);
     return 'mkdir -p ${_shellQuote(configDir.path)} ${_shellQuote(logDir.path)}; '
         '$repairBefore'
-        '$terminateExisting'
         '$rotateLog'
         ': > ${_shellQuote(logPath)}; chmod 600 ${_shellQuote(logPath)}; '
         '$repairBefore'
@@ -89,17 +87,6 @@ extension DaemonControllerElevation on DaemonController {
         '/bin/rm -f $previous || exit 72; '
         '/bin/mv $current $previous || exit 73; '
         'fi; ';
-  }
-
-  String _macosTerminateRecordedDaemonShell(String pidPath) {
-    if (!Platform.isMacOS) return '';
-    final quotedPidPath = _shellQuote(pidPath);
-    return 'if [ -f $quotedPidPath ]; then '
-        'oldpid="\$(/bin/cat $quotedPidPath 2>/dev/null || true)"; '
-        'case "\$oldpid" in ""|*[!0-9]*) ;; *) '
-        'if /bin/ps -p "\$oldpid" -o command= 2>/dev/null | /usr/bin/grep -q p2wlan-daemon; then '
-        '/bin/kill "\$oldpid" >/dev/null 2>&1 || true; /bin/sleep 1; '
-        'fi ;; esac; fi; ';
   }
 
   String _macosRepairOwnershipShell(Directory configDir, Directory logDir) {
@@ -230,7 +217,11 @@ extension DaemonControllerElevation on DaemonController {
       throw StateError(stderr.isEmpty ? 'Windows UAC 启动失败。' : stderr);
     }
     final pid = parseWindowsChildPidMarker(result.stdout.toString());
-    if (pid != null && await _waitForWindowsChildIdentity(pid)) return pid;
+    if (pid != null) {
+      _launchedProcessId = pid;
+      if (await _waitForWindowsChildIdentity(pid)) return pid;
+      _launchedProcessId = null;
+    }
     throw StateError(
       'PID_MARKER_FAILED: Windows UAC did not return the elevated child PID.',
     );
