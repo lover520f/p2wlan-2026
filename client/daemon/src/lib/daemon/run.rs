@@ -94,6 +94,16 @@ impl Daemon {
                             )));
                         }
 
+                        #[cfg(target_os = "android")]
+                        if self.config.network.network_id.starts_with("room-")
+                            && (vip != self.config.network.virtual_ip
+                                || actual_cidr != self.config.network.cidr)
+                        {
+                            return Err(DaemonError::Config(
+                                "room address changed after Android VPN preparation; reconnect the room".into(),
+                            ));
+                        }
+
                         virtual_ip = vip;
                         if let Some(derived_mask) = cidr_to_netmask(&actual_cidr) {
                             netmask = derived_mask;

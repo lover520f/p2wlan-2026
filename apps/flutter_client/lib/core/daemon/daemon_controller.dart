@@ -12,6 +12,8 @@ import '../capabilities/permission_preflight.dart';
 import '../models/diagnostics_models.dart';
 import '../platform/android_platform.dart';
 import '../security/redactor.dart';
+import '../rooms/room_api.dart';
+import '../rooms/room_profiles.dart';
 
 part 'daemon_controller/process_control.dart';
 part 'daemon_controller/elevation.dart';
@@ -29,6 +31,10 @@ abstract interface class AndroidVpnTransport {
   Future<bool> start(String requestJson);
   Future<bool> stop();
   Future<AndroidVpnStatus> status();
+}
+
+abstract interface class AndroidRoomPreparingTransport {
+  Future<String> prepareRoom(String requestJson);
 }
 
 class AndroidVpnStatus {
@@ -57,12 +63,22 @@ class AndroidVpnStatus {
   final String? lastResult;
 }
 
-class MethodChannelAndroidVpnTransport implements AndroidVpnTransport {
+class MethodChannelAndroidVpnTransport
+    implements AndroidVpnTransport, AndroidRoomPreparingTransport {
   const MethodChannelAndroidVpnTransport({
     this.channel = const MethodChannel('p2wlan/android_vpn'),
   });
 
   final MethodChannel channel;
+
+  @override
+  Future<String> prepareRoom(String requestJson) async {
+    final response = await channel.invokeMethod<String>('prepareRoom', {
+      'requestJson': requestJson,
+    });
+    if (response == null) throw const RoomException('Android 房间注册无响应');
+    return response;
+  }
 
   @override
   Future<bool> prepareVpn() async =>
@@ -271,7 +287,7 @@ class DaemonController {
     await startupTrace?.stageOk(3, 'stale_daemon_check');
 
     final bind = _diagnosticsBindFromStatusUrl(settings.diagnosticsUrl);
-    final configPath = _defaultConfigPath();
+    final configPath = _defaultConfigPath(settings);
     final logDir = _defaultLogDir();
     final logPath = '${logDir.path}${Platform.pathSeparator}p2wlan-daemon.log';
     final pidPath = '${logDir.path}${Platform.pathSeparator}p2wlan-daemon.pid';
@@ -405,7 +421,8 @@ class DaemonController {
       '--log-file',
       logPath,
       if (deviceName.isNotEmpty) ...['--device-name', deviceName],
-      if (settings.virtualIp.trim().isNotEmpty) ...[
+      if (!isRoomNetwork(settings.networkId) &&
+          settings.virtualIp.trim().isNotEmpty) ...[
         '--address',
         settings.virtualIp.trim(),
       ],

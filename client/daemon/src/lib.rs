@@ -51,6 +51,7 @@ pub mod port_mapping;
 pub mod relay;
 pub(crate) mod relay_probe;
 pub(crate) mod relay_runtime;
+pub mod rooms;
 pub mod route;
 pub mod tasks;
 pub mod transport;

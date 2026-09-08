@@ -251,6 +251,8 @@ class P2wlanVpnService : VpnService() {
             }
 
             val request = JSONObject(requestJson)
+            RoomProfilePaths.configPath(filesDir, request)
+            RoomProfilePaths.validateAddress(request)
             val experiment = AndroidExperimentConfig.from(request)
             val overlay = parseCidr(request.optString("overlay_cidr", "10.20.0.0/16"))
             val address = validIpv4(request.optString("virtual_ip"))
@@ -815,9 +817,7 @@ class P2wlanVpnService : VpnService() {
     private fun enrichRequest(request: JSONObject): JSONObject {
         val directory = File(filesDir, "p2wlan")
         if (!directory.exists()) directory.mkdirs()
-        if (!request.has("config_path")) {
-            request.put("config_path", File(directory, "p2wlan-config.json").absolutePath)
-        }
+        request.put("config_path", RoomProfilePaths.configPath(filesDir, request).absolutePath)
         if (!request.has("log_path")) {
             request.put("log_path", File(directory, "p2wlan-daemon.log").absolutePath)
         }

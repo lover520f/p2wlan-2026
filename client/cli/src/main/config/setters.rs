@@ -2,6 +2,9 @@ fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<(), S
     match key {
         "control" => {
             let server = normalize_control_server(value)?;
+            if server != config.control.server_url && config.network.network_id.starts_with("room-") {
+                return Err("房间身份不能切换服务器，请使用独立配置文件".into());
+            }
             if server != config.control.server_url {
                 config.control.server_url = server;
                 config.control.auth_token.clear();
@@ -13,6 +16,9 @@ fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<(), S
                 return Err("network 不能为空".to_string());
             }
             let network = value.trim();
+            if network != config.network.network_id && (network.starts_with("room-") || config.network.network_id.starts_with("room-")) {
+                return Err("房间身份不能迁移网络，请使用独立配置文件".into());
+            }
             if network != config.network.network_id {
                 config.network.network_id = network.to_string();
                 clear_device_credential(config);

@@ -11,6 +11,8 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONObject
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -18,6 +20,7 @@ class MainActivity : FlutterActivity() {
         private const val PLATFORM_CHANNEL = "p2wlan/platform"
         private const val VPN_PERMISSION_REQUEST = 39278
 
+        private val roomPreparationInProgress = AtomicBoolean(false)
         private val nextActivityIncarnation = AtomicLong()
         private val nextEngineIncarnation = AtomicLong()
     }
@@ -81,6 +84,7 @@ class MainActivity : FlutterActivity() {
 
     private fun handleMethod(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "prepareRoom" -> prepareRoom(call, result)
             "prepareVpn" -> prepareVpn(result)
             "start" -> startVpn(call, result)
             "stop" -> stopVpn(result)
@@ -95,6 +99,39 @@ class MainActivity : FlutterActivity() {
             "diagnosticsAuthToken" -> result.success(readDiagnosticsAuthToken())
             else -> result.notImplemented()
         }
+    }
+
+    private fun prepareRoom(call: MethodCall, result: MethodChannel.Result) {
+        val text = call.argument<String>("requestJson")
+        if (text.isNullOrBlank() || text.length > 32768) {
+            result.error("invalid_room_request", "房间连接请求无效", null)
+            return
+        }
+        if (!roomPreparationInProgress.compareAndSet(false, true)) {
+            result.error("room_preparation_busy", "另一个房间正在准备连接", null)
+            return
+        }
+        val activity = activityIncarnation
+        val engine = engineIncarnation
+        Thread {
+            val prepared = runCatching {
+                val request = JSONObject(text)
+                require(RoomProfilePaths.isRoom(request)) { "Not a room request" }
+                request.put("config_path", RoomProfilePaths.configPath(filesDir, request).absolutePath)
+                P2wlanNative.prepareRoom(request.toString())
+            }
+            runOnUiThread {
+                roomPreparationInProgress.set(false)
+                if (isDestroyed || activity != activityIncarnation || engine != engineIncarnation) {
+                    runCatching { result.error("room_preparation_stale", "房间准备结果已过期，请重新连接", null) }
+                } else {
+                    prepared.fold(
+                        onSuccess = { result.success(it) },
+                        onFailure = { result.error("room_preparation_failed", "房间注册失败，请检查账号权限、服务器版本和网络", null) },
+                    )
+                }
+            }
+        }.start()
     }
 
     private fun prepareVpn(result: MethodChannel.Result) {

@@ -331,20 +331,27 @@ func (s *Server) CreateSignal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"target device is in a different network"}`, http.StatusForbidden)
 		return
 	}
-	if targetDevice.UserID != senderDevice.UserID {
-		// A shared network membership is not sufficient to exchange control
-		// signals in the account-scoped product model. This prevents a device
-		// credential from targeting another account's node by guessing its ID.
+	allowed, err := s.db.DevicesMayCommunicate(fromNodeID, req.ToNodeID)
+	if err != nil {
+		http.Error(w, `{"error":"authorization check failed"}`, http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
 		http.Error(w, `{"error":"target device not found or access denied"}`, http.StatusForbidden)
 		return
 	}
+
 	if err := verifyProbeEphemeralSignature(senderDevice, req.Type, fromNodeID, req.ToNodeID, req.SessionID, req.ProbeEphemeralPublicKey, req.ProbeEphemeralSignature, req.CandidateGeneration, req.CandidatesExpiresAtMS); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusUnauthorized)
 		return
 	}
 
-	signal, err := s.db.CreateSignalWithTraversalSession(fromNodeID, req.ToNodeID, req.Type, protocolVersion, req.Candidates, req.CandidateSources, req.Handshake, normalizedPunchAtMS, req.CandidateGeneration, candidatesExpiresAtMS, req.SessionID, req.ProbeEphemeralPublicKey, senderIdentityFingerprint(senderDevice))
+	signal, err := s.db.CreateAuthorizedSignalWithTraversalSession(fromNodeID, req.ToNodeID, req.Type, protocolVersion, req.Candidates, req.CandidateSources, req.Handshake, normalizedPunchAtMS, req.CandidateGeneration, candidatesExpiresAtMS, req.SessionID, req.ProbeEphemeralPublicKey, senderIdentityFingerprint(senderDevice))
 	if err != nil {
+		if errors.Is(err, database.ErrRoomAccess) {
+			roomError(w, err)
+			return
+		}
 		if errors.Is(err, database.ErrSignalQueueLimit) {
 			// A clear degradable signal: the queue bound (pair rows/bytes,
 			// global rows, or sender frequency) is exceeded.  The sender

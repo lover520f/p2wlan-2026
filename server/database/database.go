@@ -39,6 +39,11 @@ func New(path string) (*DB, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
+	if err := migrateRooms(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate rooms: %w", err)
+	}
+
 	return &DB{db}, nil
 }
 

@@ -32,6 +32,12 @@ internal object P2wlanNative {
         }
     }
 
+    fun prepareRoom(requestJson: String): String {
+        check(ensureLoaded()) { "Android 原生库不可用，请更新安装包" }
+        return nativePrepareRoom(requestJson)
+            ?: throw IllegalStateException("房间注册未返回结果")
+    }
+
     fun start(
         service: P2wlanVpnService,
         serviceIncarnation: Long,
@@ -184,6 +190,8 @@ internal object P2wlanNative {
             Log.w(TAG, "关闭 Android VPN fd 失败", error)
         }
     }
+
+    private external fun nativePrepareRoom(requestJson: String): String?
 
     private external fun nativeStart(
         service: P2wlanVpnService,

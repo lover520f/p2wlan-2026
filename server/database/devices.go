@@ -61,11 +61,22 @@ func (db *DB) CreateDevice(userID, networkID, publicKey, deviceName, platform, e
 
 // CreateDeviceWithOptions inserts or updates a device with optional runtime metadata.
 func (db *DB) CreateDeviceWithOptions(userID, networkID, publicKey, deviceName, platform, ed25519PublicKey, requestedVirtualIP, appVersion string) (*Device, error) {
-	tx, err := db.Begin()
+	tx, err := db.beginRoomWrite()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+
+	var room, member bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM rooms WHERE network_id = ?), EXISTS(SELECT 1 FROM network_memberships WHERE network_id = ? AND user_id = ?)`, networkID, networkID, userID).Scan(&room, &member); err != nil {
+		return nil, err
+	}
+	if room && !member {
+		return nil, ErrRoomAccess
+	}
+	if room && strings.TrimSpace(requestedVirtualIP) != "" {
+		return nil, ErrRoomInvalid
+	}
 
 	var existing Device
 	var online int
@@ -392,20 +403,7 @@ func (db *DB) DeleteDevice(deviceID string) error {
 	}
 	defer tx.Rollback()
 
-	now := time.Now().Unix()
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO relay_revocations (kind, value, created_at) VALUES (?, ?, ?)`,
-		RelayRevocationDeviceID, deviceID, now); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO relay_revocations (kind, value, created_at)
-		SELECT ?, id, ? FROM device_credentials WHERE device_id = ?`,
-		RelayRevocationCredentialID, now, deviceID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE device_credentials SET revoked = 1 WHERE device_id = ? AND revoked = 0`, deviceID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM devices WHERE id = ?`, deviceID); err != nil {
+	if err := revokeRoomDeviceTx(tx, deviceID, true); err != nil {
 		return err
 	}
 	return tx.Commit()

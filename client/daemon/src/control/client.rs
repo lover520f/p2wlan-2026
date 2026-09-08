@@ -1,4 +1,36 @@
 impl ControlClient {
+    pub async fn register_room_profile(config: &mut Config) -> Result<()> {
+        if !config.network.network_id.starts_with("room-")
+            || config.network.manual
+            || config.control.auth_token.trim().is_empty()
+        {
+            return Err(DaemonError::Config("room registration requires an authenticated managed profile".into()));
+        }
+        let http = control_http_client(config.control.proxy_mode)?;
+        let (node_id, virtual_ip, cidr, relays, _) = register_device(
+            &http,
+            &normalize_http_base_url(&config.control.server_url),
+            &config.control.auth_token,
+            config,
+        ).await?;
+        let address = virtual_ip.parse::<std::net::Ipv4Addr>()
+            .map_err(|_| DaemonError::Network("invalid room address".into()))?;
+        let octets = address.octets();
+        if octets[0] != 10 || octets[1] != 21 || !(1..=254).contains(&octets[3])
+            || cidr != format!("10.21.{}.0/24", octets[2])
+        {
+            return Err(DaemonError::Network("invalid room subnet assignment".into()));
+        }
+        config.node.node_id = node_id;
+        config.network.virtual_ip = virtual_ip;
+        config.network.cidr = cidr;
+        config.network.netmask = "255.255.255.0".into();
+        if !relays.is_empty() {
+            config.relay.servers = relays;
+        }
+        Ok(())
+    }
+
     /// Create a new control client.
     ///
     /// When `enabled` is `false`, the background control loop is not spawned
@@ -50,6 +82,7 @@ impl ControlClient {
         let (critical_auth_tx, critical_auth_rx) = watch::channel(None);
 
         let state = Arc::new(RwLock::new(ClientState {
+            room_authorization: Arc::new(crate::rooms::RoomAuthorization::new(&config.network.network_id)),
             registered: false,
             peers: HashMap::new(),
             virtual_ip: None,
@@ -176,6 +209,7 @@ impl ControlClient {
         drop(critical_ctrl_rx);
         drop(candidate_offer_rx);
         let state = Arc::new(RwLock::new(ClientState {
+            room_authorization: Arc::new(crate::rooms::RoomAuthorization::new("default")),
             registered: false,
             peers: HashMap::new(),
             virtual_ip: None,
@@ -829,5 +863,11 @@ impl ControlClient {
         response_rx.await.map_err(|_| {
             DaemonError::ControlPlane("critical peer answer response channel closed".into())
         })?
+    }
+}
+
+impl ControlClient {
+    pub async fn room_authorization(&self) -> Arc<crate::rooms::RoomAuthorization> {
+        self.state.read().await.room_authorization.clone()
     }
 }

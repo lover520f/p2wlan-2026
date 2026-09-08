@@ -7,6 +7,7 @@ pub(super) async fn poll_peers(
     state: &Arc<RwLock<ClientState>>,
     event_tx: &mpsc::UnboundedSender<ControlEvent>,
 ) -> Result<()> {
+    let request_started = std::time::Instant::now();
     let res = http
         .get(format!(
             "{base_url}/api/v1/nodes?network_id={}",
@@ -19,6 +20,9 @@ pub(super) async fn poll_peers(
         .map_err(|e| DaemonError::ControlPlane(format!("list nodes request failed: {e}")))?;
 
     if !res.status().is_success() {
+        if matches!(res.status().as_u16(), 401 | 403 | 404) {
+            state.read().await.room_authorization.invalidate();
+        }
         return Err(DaemonError::ControlPlane(format!(
             "list nodes request returned HTTP {}",
             res.status()
@@ -29,6 +33,21 @@ pub(super) async fn poll_peers(
         .json()
         .await
         .map_err(|e| DaemonError::ControlPlane(format!("list nodes decode failed: {e}")))?;
+
+    let room_authorization = state.read().await.room_authorization.clone();
+    if room_authorization.enabled() {
+        let local = body.nodes.iter().find(|node| node.id == self_node_id && node.public_key == config.node.public_key);
+        let valid = local.is_some_and(|local| room_authorization.replace(
+            &local.virtual_ip,
+            body.nodes.iter().filter(|node| node.id != self_node_id).map(|node| (node.id.clone(), node.virtual_ip.clone())),
+            request_started,
+            body.authorization_lease_seconds,
+        ));
+        if !valid {
+            room_authorization.invalidate();
+            return Err(DaemonError::ControlPlane("room authorization roster is missing, invalid or expired".into()));
+        }
+    }
 
     debug!(
         "poll_peers: received {} nodes from control plane (self_node_id={})",

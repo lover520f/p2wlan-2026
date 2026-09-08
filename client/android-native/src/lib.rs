@@ -376,6 +376,74 @@ mod android_bridge {
         Ok(file)
     }
 
+    fn prepare_room(request: &AndroidStartRequest) -> Result<String, String> {
+        if !request.network_id.starts_with("room-")
+            || request.manual_mode
+            || request.auth_token.trim().is_empty()
+        {
+            return Err("room preparation requires an authenticated account".into());
+        }
+        let path = PathBuf::from(request.config_path.trim());
+        if path.as_os_str().is_empty() {
+            return Err("room profile path is missing".into());
+        }
+        let mut config = {
+            let _guard = start_lock()
+                .lock()
+                .map_err(|_| "room profile lock unavailable")?;
+            if runtime_running() {
+                return Err("stop the existing VPN before preparing a room".into());
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|_| "room profile directory unavailable")?;
+            }
+            if path.exists() {
+                Config::load_from_file(&path).map_err(|_| "room profile cannot be loaded")?
+            } else {
+                Config::generate_default(&request.control_server, &request.network_id)
+                    .map_err(|_| "room identity cannot be generated")?
+            }
+        };
+        if config.network.network_id != request.network_id
+            || config.control.server_url.trim_end_matches('/')
+                != request.control_server.trim_end_matches('/')
+        {
+            return Err("room profile belongs to a different network".into());
+        }
+        config.control.auth_token = request.auth_token.clone();
+        config.control.proxy_mode = ControlProxyMode::Direct;
+        config.network.manual = false;
+        config.node.platform = "android".into();
+        if !request.device_name.trim().is_empty() {
+            config.node.device_name = request.device_name.trim().to_owned();
+        }
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| "room registration runtime unavailable")?;
+        runtime
+            .block_on(p2pnet_daemon::control::ControlClient::register_room_profile(&mut config))
+            .map_err(|_| {
+                "room registration failed; check membership, server version and connectivity"
+            })?;
+        let reply = serde_json::json!({"virtual_ip": config.network.virtual_ip, "cidr": config.network.cidr}).to_string();
+        config.control.auth_token.clear();
+        config.diagnostics.auth_token = None;
+        config.diagnostics.auth_token_path = None;
+        config.diagnostics.log_path = None;
+        let _guard = start_lock()
+            .lock()
+            .map_err(|_| "room profile lock unavailable")?;
+        if runtime_running() {
+            return Err("VPN state changed during room preparation".into());
+        }
+        config
+            .save_to_file(&path)
+            .map_err(|_| "room identity could not be persisted")?;
+        Ok(reply)
+    }
+
     fn prepare_config(request: &AndroidStartRequest) -> Result<(Config, PathBuf), String> {
         let config_path = PathBuf::from(request.config_path.trim());
         if config_path.as_os_str().is_empty() {
@@ -395,6 +463,15 @@ mod android_bridge {
             Config::generate_default(&control_server, &network_id)
                 .map_err(|error| format!("failed to generate Android daemon identity: {error}"))?
         };
+
+        if network_id.starts_with("room-")
+            && (config.network.network_id != network_id
+                || config.control.server_url.trim_end_matches('/')
+                    != control_server.trim_end_matches('/')
+                || request.manual_mode)
+        {
+            return Err("room profile context mismatch".into());
+        }
 
         let cidr = non_empty(&request.overlay_cidr, DEFAULT_OVERLAY_CIDR);
         let (_prefix, netmask) = overlay_prefix_and_netmask(&cidr);
@@ -715,6 +792,23 @@ mod android_bridge {
                 .unwrap_or(std::ptr::null_mut()),
             None => std::ptr::null_mut(),
         }
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_example_p2wlan_1flutter_1client_P2wlanNative_nativePrepareRoom(
+        mut env: JNIEnv<'_>,
+        _object: JObject<'_>,
+        request_json: JString<'_>,
+    ) -> jstring {
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            let request = read_request(&mut env, request_json)?;
+            prepare_room(&request)
+        }));
+        let reply = match outcome {
+            Ok(Ok(reply)) => reply,
+            _ => serde_json::json!({"error": "room registration failed"}).to_string(),
+        };
+        new_string_or_null(&mut env, Some(reply))
     }
 
     /// Start the Rust daemon around the Android VPN fd. A null return means the

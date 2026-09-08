@@ -384,3 +384,12 @@ func checkOrigin(r *http.Request) bool {
 	}
 	return false
 }
+
+func (h *Hub) Disconnect(nodeID string) {
+	h.mu.RLock()
+	client := h.clients[nodeID]
+	h.mu.RUnlock()
+	if client != nil {
+		client.requestClose(websocket.ClosePolicyViolation, "device authorization changed")
+	}
+}

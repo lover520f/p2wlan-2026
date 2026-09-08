@@ -92,6 +92,10 @@ class AppSettings {
     this.macosAdminPassword = '',
     this.macosAdminPasswordCiphertext = '',
     this.networkId = defaultNetworkId,
+    this.personalNetworkId = defaultNetworkId,
+    this.personalOverlayCidr = defaultOverlayCidr,
+    this.personalVirtualIp = '',
+    this.personalManualMode = false,
     this.virtualIp = '',
     this.deviceName = '',
     this.manualMode = false,
@@ -121,6 +125,10 @@ class AppSettings {
   final String macosAdminPasswordCiphertext;
 
   final String networkId;
+  final String personalNetworkId;
+  final String personalOverlayCidr;
+  final String personalVirtualIp;
+  final bool personalManualMode;
   final String virtualIp;
   final String deviceName;
   final bool manualMode;
@@ -152,6 +160,10 @@ class AppSettings {
     String? macosAdminPassword,
     String? macosAdminPasswordCiphertext,
     String? networkId,
+    String? personalNetworkId,
+    String? personalOverlayCidr,
+    String? personalVirtualIp,
+    bool? personalManualMode,
     String? virtualIp,
     String? deviceName,
     bool? manualMode,
@@ -175,6 +187,10 @@ class AppSettings {
       macosAdminPasswordCiphertext:
           macosAdminPasswordCiphertext ?? this.macosAdminPasswordCiphertext,
       networkId: networkId ?? this.networkId,
+      personalNetworkId: personalNetworkId ?? this.personalNetworkId,
+      personalOverlayCidr: personalOverlayCidr ?? this.personalOverlayCidr,
+      personalVirtualIp: personalVirtualIp ?? this.personalVirtualIp,
+      personalManualMode: personalManualMode ?? this.personalManualMode,
       virtualIp: virtualIp ?? this.virtualIp,
       deviceName: deviceName ?? this.deviceName,
       manualMode: manualMode ?? this.manualMode,
@@ -209,6 +225,13 @@ class AppSettings {
         json['macosAdminPasswordCiphertext'],
       ),
       networkId: _string(json['networkId'], defaultNetworkId),
+      personalNetworkId: _string(json['personalNetworkId'], defaultNetworkId),
+      personalOverlayCidr: _string(
+        json['personalOverlayCidr'],
+        defaultOverlayCidr,
+      ),
+      personalVirtualIp: _string(json['personalVirtualIp']),
+      personalManualMode: _bool(json['personalManualMode']),
       virtualIp: _string(json['virtualIp']),
       deviceName: _string(json['deviceName']),
       manualMode: _bool(json['manualMode']),
@@ -238,6 +261,10 @@ class AppSettings {
     'authToken': authToken,
     'macosAdminPasswordCiphertext': macosAdminPasswordCiphertext,
     'networkId': networkId,
+    'personalNetworkId': personalNetworkId,
+    'personalOverlayCidr': personalOverlayCidr,
+    'personalVirtualIp': personalVirtualIp,
+    'personalManualMode': personalManualMode,
     'virtualIp': virtualIp,
     'deviceName': deviceName,
     'manualMode': manualMode,

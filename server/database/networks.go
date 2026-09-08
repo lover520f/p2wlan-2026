@@ -2,7 +2,7 @@ package database
 
 import (
 	"fmt"
-	"net"
+	"net/netip"
 	"time"
 )
 
@@ -95,17 +95,50 @@ func (db *DB) CreateNetwork(ownerID, name, cidr string) (*Network, error) {
 	if cidr == "" {
 		cidr = "10.20.0.0/16"
 	}
-	if _, _, err := net.ParseCIDR(cidr); err != nil {
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
 		return nil, fmt.Errorf("invalid cidr: %w", err)
 	}
-	id := fmt.Sprintf("net-%d", time.Now().UnixNano())
+	id, err := roomRandomID("net-", 16)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := db.beginRoomWrite()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT cidr FROM room_subnets WHERE network_id IS NOT NULL OR reusable_after > ?`, time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var reserved string
+		if err := rows.Scan(&reserved); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		roomPrefix, err := netip.ParsePrefix(reserved)
+		if err != nil || roomPrefix.Overlaps(prefix) {
+			rows.Close()
+			return nil, ErrRoomConflict
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().Unix()
-	_, err := db.Exec(`INSERT INTO networks (id, name, cidr, owner_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+	_, err = tx.Exec(`INSERT INTO networks (id, name, cidr, owner_id, created_at) VALUES (?, ?, ?, ?, ?)`,
 		id, name, cidr, ownerID, now)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.CreateNetworkMembership(ownerID, id, "owner"); err != nil {
+	if _, err := tx.Exec(`INSERT INTO network_memberships (id, user_id, network_id, role, created_at) VALUES (?, ?, ?, 'owner', ?)`, "mem-"+id, ownerID, id, now); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return &Network{ID: id, Name: name, CIDR: cidr, OwnerID: ownerID, CreatedAt: now}, nil

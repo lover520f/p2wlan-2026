@@ -17,6 +17,7 @@ async fn poll_peers_preserves_offline_devices_from_control_plane() {
 
     let config = test_config();
     let state = Arc::new(RwLock::new(ClientState {
+        room_authorization: Arc::new(crate::rooms::RoomAuthorization::new("default")),
         registered: true,
         peers: HashMap::new(),
         virtual_ip: Some("10.20.0.2".to_string()),
@@ -79,6 +80,7 @@ async fn poll_peers_admits_online_peer_before_historical_offline_rows() {
 
     let config = test_config();
     let state = Arc::new(RwLock::new(ClientState {
+        room_authorization: Arc::new(crate::rooms::RoomAuthorization::new("default")),
         registered: true,
         peers: HashMap::new(),
         virtual_ip: Some("10.20.0.2".to_string()),

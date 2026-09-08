@@ -44,9 +44,34 @@ extension DaemonControllerAndroidVpn on DaemonController {
       );
     }
 
-    final requestJson = _androidRequestJson(settings);
-
     try {
+      var requestJson = _androidRequestJson(settings);
+      if (isRoomNetwork(settings.networkId)) {
+        final transport = androidVpnTransport;
+        if (transport is! AndroidRoomPreparingTransport) {
+          throw const RoomException('当前 Android 原生组件不支持房间，请更新完整安装包');
+        }
+        final prepared = jsonDecode(
+          await (transport as AndroidRoomPreparingTransport).prepareRoom(
+            requestJson,
+          ),
+        );
+        if (prepared is! Map ||
+            prepared['error'] != null ||
+            prepared['cidr'] is! String ||
+            prepared['virtual_ip'] is! String ||
+            prepared['cidr'] != settings.overlayCidr ||
+            !validRoomIp(
+              prepared['virtual_ip'] as String,
+              prepared['cidr'] as String,
+            )) {
+          throw const RoomException('房间 IP 注册失败或地址已变化，请刷新房间后重新连接');
+        }
+        final request = jsonDecode(requestJson) as Map<String, dynamic>;
+        request['virtual_ip'] = prepared['virtual_ip'];
+        request['overlay_cidr'] = prepared['cidr'];
+        requestJson = jsonEncode(request);
+      }
       final started = await androidVpnTransport.start(requestJson);
       if (!started) {
         return const DaemonCommandResult(
@@ -96,6 +121,8 @@ extension DaemonControllerAndroidVpn on DaemonController {
           : settings.networkId.trim(),
       'auth_token': settings.authToken,
       'device_name': settings.deviceName,
+      if (isRoomNetwork(settings.networkId))
+        'profile_id': roomProfileId(settings),
       'virtual_ip': settings.virtualIp,
       'manual_mode': settings.manualMode,
       'overlay_cidr': settings.overlayCidr,
