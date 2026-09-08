@@ -1,0 +1,54 @@
+name: Parallel Rooms
+
+on:
+  push:
+    branches: [feat/parallel-rooms-20260908]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/flutter_client/**'
+      - 'client/**'
+      - '.fvmrc'
+      - '.github/workflows/parallel-rooms.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parallel-rooms-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle:
+    name: Parallel room lifecycle contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version-file: .fvmrc
+          cache: true
+      - name: Resolve dependencies
+        working-directory: apps/flutter_client
+        run: flutter pub get
+      - name: Archive pinned formatter for offline development
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/parallel-rooms-20260908'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart_sdk="$(dirname "$(readlink -f "$(command -v dart)")")/cache/dart-sdk"
+          test -x "$dart_sdk/bin/dart"
+          tar -C "$dart_sdk" -czf "$RUNNER_TEMP/p2wlan-dart-sdk.tar.gz" .
+      - name: Upload pinned formatter
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/parallel-rooms-20260908'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p2wlan-dart-sdk-${{ github.sha }}
+          path: ${{ runner.temp }}/p2wlan-dart-sdk.tar.gz
+          retention-days: 1
+      - name: Parallel lifecycle tests
+        working-directory: apps/flutter_client
+        run: flutter test test/parallel_rooms_test.dart
