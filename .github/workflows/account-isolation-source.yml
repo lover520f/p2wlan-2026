@@ -24,10 +24,26 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/offline-host"
-          tar -C "$FLUTTER_ROOT" --exclude='./bin/cache/dart-sdk' --exclude='./bin/cache/artifacts/engine/android*' --exclude='./bin/cache/flutter_web_sdk' --exclude='./bin/cache/artifacts/engine/ios*' --exclude='./bin/cache/artifacts/engine/windows*' --exclude='./bin/cache/artifacts/engine/darwin*' -czf "$RUNNER_TEMP/offline-host/flutter-host.tar.gz" .
+          tar -C "$FLUTTER_ROOT" --exclude='./bin/cache/dart-sdk' --exclude='./bin/cache/artifacts/engine/android*' --exclude='./bin/cache/flutter_web_sdk' --exclude='./bin/cache/artifacts/engine/ios*' --exclude='./bin/cache/artifacts/engine/windows*' --exclude='./bin/cache/artifacts/engine/darwin*' -czf "$RUNNER_TEMP/flutter-host.tar.gz" .
+          split -b 250m -d "$RUNNER_TEMP/flutter-host.tar.gz" "$RUNNER_TEMP/offline-host/host-"
           tar -C "$HOME" -czf "$RUNNER_TEMP/offline-host/pub-cache.tar.gz" .pub-cache
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: account-isolation-offline-host
-          path: ${{ runner.temp }}/offline-host/*.tar.gz
+          name: host-0
+          path: ${{ runner.temp }}/offline-host/host-00
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: host-1
+          path: ${{ runner.temp }}/offline-host/host-01
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: host-2
+          path: ${{ runner.temp }}/offline-host/host-02
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: host-dependencies
+          path: ${{ runner.temp }}/offline-host/pub-cache.tar.gz
           retention-days: 1
