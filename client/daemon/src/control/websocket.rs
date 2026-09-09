@@ -18,7 +18,9 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::time;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
+use tokio_tungstenite::tungstenite::http::header::{
+    HeaderName, AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL,
+};
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 use tracing::{debug, info, warn};
@@ -139,6 +141,7 @@ pub(super) fn spawn_signal_websocket(
     token: &str,
     node_id: &str,
     network_id: &str,
+    registration_seq: Option<u64>,
     wake_tx: mpsc::Sender<()>,
     connected: Arc<AtomicBool>,
 ) -> SignalWebSocketTask {
@@ -154,6 +157,7 @@ pub(super) fn spawn_signal_websocket(
             &token,
             &node_id,
             &network_id,
+            registration_seq,
             wake_tx,
             task_lifecycle,
         )
@@ -168,6 +172,7 @@ pub(super) async fn run_signal_websocket(
     token: &str,
     expected_node_id: &str,
     expected_network_id: &str,
+    registration_seq: Option<u64>,
     wake_tx: mpsc::Sender<()>,
     connected: Arc<AtomicBool>,
 ) {
@@ -176,6 +181,7 @@ pub(super) async fn run_signal_websocket(
         token,
         expected_node_id,
         expected_network_id,
+        registration_seq,
         wake_tx,
         SignalConnectionLifecycle::new(connected),
     )
@@ -187,6 +193,7 @@ async fn run_signal_websocket_with_lifecycle(
     token: &str,
     expected_node_id: &str,
     expected_network_id: &str,
+    registration_seq: Option<u64>,
     wake_tx: mpsc::Sender<()>,
     lifecycle: SignalConnectionLifecycle,
 ) {
@@ -223,6 +230,19 @@ async fn run_signal_websocket_with_lifecycle(
             SEC_WEBSOCKET_PROTOCOL,
             HeaderValue::from_static(SIGNAL_WS_PROTOCOL),
         );
+        if let Some(registration_seq) = registration_seq.filter(|seq| *seq > 0) {
+            let registration_seq = match HeaderValue::from_str(&registration_seq.to_string()) {
+                Ok(value) => value,
+                Err(_) => {
+                    warn!("WebSocket signaling disabled: invalid registration sequence header");
+                    return;
+                }
+            };
+            request.headers_mut().insert(
+                HeaderName::from_static("x-p2wlan-registration-seq"),
+                registration_seq,
+            );
+        }
 
         // Proxy policy: WebSocket signaling is ALWAYS direct-only. The raw
         // TCP socket is created explicitly so direct-only also means bypassing

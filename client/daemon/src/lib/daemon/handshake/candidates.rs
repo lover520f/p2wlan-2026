@@ -270,8 +270,9 @@ impl Daemon {
                 .await
                 .as_ref()
                 .map(|profile| {
-                    profile.control_label_with_generation(
+                    profile.control_label_with_generation_and_observation(
                         self.peers.current_local_profile_generation_sync(),
+                        self.peers.current_local_profile_observation_sync(),
                     )
                 })
                 .unwrap_or_else(|| "unknown".to_string());

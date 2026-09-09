@@ -94,8 +94,12 @@ class _FakeRoomApi extends RoomApi {
 }
 
 class _RoomRuntime implements RoomRuntime {
-  _RoomRuntime(this.snapshot);
-  final DiagnosticsSnapshot snapshot;
+  _RoomRuntime(this.snapshot) {
+    instances.add(this);
+  }
+  static final instances = <_RoomRuntime>[];
+  DiagnosticsSnapshot snapshot;
+  int statusCalls = 0;
   @override
   Future<bool> exists() async => false;
   @override
@@ -105,7 +109,11 @@ class _RoomRuntime implements RoomRuntime {
   Future<DaemonCommandResult> stop() async =>
       const DaemonCommandResult(ok: true, message: '');
   @override
-  Future<DiagnosticsSnapshot> status() async => snapshot;
+  Future<DiagnosticsSnapshot> status() async {
+    statusCalls++;
+    return snapshot;
+  }
+
   @override
   void close() {}
 }
@@ -145,6 +153,7 @@ void main() {
     DiagnosticsSnapshot? snapshot,
     bool shell = false,
     bool enterRoom = true,
+    bool enableDaemonPolling = false,
   }) async {
     final dir = await tester.runAsync(
       () => Directory.systemTemp.createTemp('p2wlan-rooms-ui-'),
@@ -166,7 +175,9 @@ void main() {
     final parallel = ParallelRooms(
       readSettings: () => settings.settings,
       supported: snapshot != null,
-      refreshInterval: Duration.zero,
+      refreshInterval: enableDaemonPolling
+          ? const Duration(seconds: 5)
+          : Duration.zero,
       runtimeFactory: (_) => _RoomRuntime(snapshot!),
     );
     if (snapshot != null) {
@@ -521,5 +532,122 @@ void main() {
     expect(find.text(api.joinError!), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('connection phase displays fine-grained status labels', (
+    tester,
+  ) async {
+    // 1. Direct confirmed
+    final directSnap = _snapshot(verified: true);
+    await pump(tester, snapshot: directSnap, enterRoom: false);
+    await tester.pumpAndSettle();
+    expect(find.text('已直连'), findsWidgets);
+    await tester.pumpWidget(const SizedBox.shrink());
+
+    // 2. Waiting for peer
+    final waitingSnap = DiagnosticsSnapshot.fromJson({
+      'network_id': _roomId,
+      'virtual_ip': '10.21.1.2',
+      'node_id': 'local',
+      'peers': <dynamic>[],
+    });
+    await pump(tester, snapshot: waitingSnap, enterRoom: false);
+    await tester.pumpAndSettle();
+    expect(find.text('等待好友'), findsWidgets);
+    await tester.pumpWidget(const SizedBox.shrink());
+
+    // 3. Handshaking
+    final handshakingSnap = DiagnosticsSnapshot.fromJson({
+      'network_id': _roomId,
+      'virtual_ip': '10.21.1.2',
+      'node_id': 'local',
+      'peers': [
+        {
+          'node_id': 'remote',
+          'device_name': '好友电脑',
+          'virtual_ip': '10.21.1.3',
+          'online': true,
+          'state': 'handshake',
+        },
+      ],
+    });
+    await pump(tester, snapshot: handshakingSnap, enterRoom: false);
+    await tester.pumpAndSettle();
+    expect(find.text('建立加密会话'), findsWidgets);
+    await tester.pumpWidget(const SizedBox.shrink());
+
+    // 4. Relay confirmed
+    final relaySnap = DiagnosticsSnapshot.fromJson({
+      'network_id': _roomId,
+      'virtual_ip': '10.21.1.2',
+      'node_id': 'local',
+      'peers': [
+        {
+          'node_id': 'remote',
+          'device_name': '好友电脑',
+          'virtual_ip': '10.21.1.3',
+          'online': true,
+          'active_path': 'relay',
+          'state': 'relay',
+          'relay_confirmed_endpoint': '1.2.3.4:443',
+          'relay_confirmed_generation': 1,
+        },
+      ],
+    });
+    await pump(tester, snapshot: relaySnap, enterRoom: false);
+    await tester.pumpAndSettle();
+    expect(find.text('中继可用'), findsWidgets);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('review: unconfirmed relay is not shown as available', (
+    tester,
+  ) async {
+    final snap = DiagnosticsSnapshot.fromJson({
+      'network_id': _roomId,
+      'virtual_ip': '10.21.1.2',
+      'node_id': 'local',
+      'peers': [
+        {
+          'node_id': 'remote',
+          'online': true,
+          'active_path': 'relay',
+          'state': 'connecting',
+        },
+      ],
+    });
+    expect(snap.peers.single.isRelayVerified, isFalse);
+    await pump(tester, snapshot: snap, enterRoom: false);
+    final readyLabels = find.textContaining('中继可用').evaluate().length;
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(
+      readyLabels,
+      0,
+      reason: 'An unconfirmed transport path is not an encrypted usable relay',
+    );
+  });
+
+  testWidgets('review: transition polling reads daemon status within 600ms', (
+    tester,
+  ) async {
+    _RoomRuntime.instances.clear();
+    await pump(
+      tester,
+      snapshot: _snapshot(verified: false),
+      enterRoom: false,
+      enableDaemonPolling: true,
+    );
+    final runtime = _RoomRuntime.instances.last;
+    final before = runtime.statusCalls;
+    runtime.snapshot = _snapshot(verified: true);
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+    final after = runtime.statusCalls;
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(
+      after,
+      greaterThan(before),
+      reason: '500ms adaptive polling must fetch a fresh daemon snapshot',
+    );
   });
 }

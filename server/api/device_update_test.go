@@ -125,6 +125,236 @@ func TestRegisterDeviceStoresRequestedIPAndVersion(t *testing.T) {
 	}
 }
 
+func TestDeviceCredentialReregistrationKeepsDeviceOnlyAuthenticationAfterResponseLoss(t *testing.T) {
+	t.Setenv("RELAY_CATALOG_JSON", `[{"region":"test","audience":"relay-test","endpoint":"tls://relay.example.com:18081"}]`)
+	t.Setenv("RELAY_TICKET_SIGNER_JSON", `{"active":{"kid":"test-key","private_key":"0101010101010101010101010101010101010101010101010101010101010101"}}`)
+	db, err := database.New(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatalf("database.New: %v", err)
+	}
+	defer db.Close()
+
+	user, err := db.CreateUser("device-reregister@example.com", "hash")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	device, err := db.CreateDevice(user.ID, "default", "device-reregister-key", "before", "macos", "")
+	if err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	_, credential, err := db.CreateDeviceCredential(device.ID, 3600)
+	if err != nil {
+		t.Fatalf("CreateDeviceCredential: %v", err)
+	}
+
+	// The handlers are wrapped in the real credential middleware. The token is
+	// deliberately not a user JWT, so any success below proves there was no
+	// user-token fallback after the registration response was dropped.
+	service := auth.NewService("credential-reregister-test", db)
+	server := NewServer(service, nil, db)
+	register := auth.RequireAnyAuth(service, db)(server.RegisterDevice)
+
+	registrationReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/devices",
+		strings.NewReader(`{"public_key":"device-reregister-key","device_name":"after","platform":"macos","network_id":"default","registration_incarnation":100}`),
+	)
+	registrationReq.Header.Set("Authorization", "Bearer "+credential)
+	registrationRecorder := httptest.NewRecorder()
+	register(registrationRecorder, registrationReq)
+	if registrationRecorder.Code != http.StatusOK {
+		t.Fatalf("device-authenticated re-registration: HTTP %d %s", registrationRecorder.Code, registrationRecorder.Body.String())
+	}
+
+	var registrationResponse struct {
+		Success                 bool   `json:"success"`
+		RegistrationSeq         int64  `json:"registration_seq"`
+		RegistrationIncarnation int64  `json:"registration_incarnation"`
+		DeviceCredential        string `json:"device_credential"`
+	}
+	if err := json.Unmarshal(registrationRecorder.Body.Bytes(), &registrationResponse); err != nil {
+		t.Fatalf("decode registration response: %v", err)
+	}
+	if !registrationResponse.Success || registrationResponse.RegistrationSeq != 2 || registrationResponse.RegistrationIncarnation != 100 {
+		t.Fatalf("unexpected registration response: %+v", registrationResponse)
+	}
+	if registrationResponse.DeviceCredential != "" {
+		t.Fatalf("credential-preserving re-registration must not unexpectedly rotate into the response: %+v", registrationResponse)
+	}
+
+	// The first response is intentionally ignored. A same-incarnation retry
+	// must be idempotent: the server must not clear state or consume another
+	// registration sequence while the daemon is recovering from a lost reply.
+	replayReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/devices",
+		strings.NewReader(`{"public_key":"device-reregister-key","device_name":"after","platform":"macos","network_id":"default","registration_incarnation":100}`),
+	)
+	replayReq.Header.Set("Authorization", "Bearer "+credential)
+	replayRecorder := httptest.NewRecorder()
+	register(replayRecorder, replayReq)
+	if replayRecorder.Code != http.StatusOK {
+		t.Fatalf("same-incarnation registration replay: HTTP %d %s", replayRecorder.Code, replayRecorder.Body.String())
+	}
+	var replayResponse struct {
+		RegistrationSeq int64 `json:"registration_seq"`
+	}
+	if err := json.Unmarshal(replayRecorder.Body.Bytes(), &replayResponse); err != nil {
+		t.Fatalf("decode replay response: %v", err)
+	}
+	if replayResponse.RegistrationSeq != registrationResponse.RegistrationSeq {
+		t.Fatalf("same-incarnation replay advanced registration sequence: got %d want %d", replayResponse.RegistrationSeq, registrationResponse.RegistrationSeq)
+	}
+
+	// Ignore the response after its server-side completion, as if it was lost.
+	// The persisted credential must still authenticate the daemon's next
+	// endpoint heartbeat without a user JWT.
+	endpoint := auth.RequireDeviceAuth(db)(server.UpdateDeviceEndpoint)
+	endpointReq := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/v1/devices/"+device.ID+"/endpoint",
+		strings.NewReader(`{"endpoint":"198.51.100.88:51820","nat_type":"p2v2:m=endpoint_independent;g=1;l=2"}`),
+	)
+	endpointReq.SetPathValue("id", device.ID)
+	endpointReq.Header.Set("Authorization", "Bearer "+credential)
+	endpointRecorder := httptest.NewRecorder()
+	endpoint(endpointRecorder, endpointReq)
+	if endpointRecorder.Code != http.StatusOK {
+		t.Fatalf("device credential did not authenticate endpoint heartbeat after re-registration: HTTP %d %s", endpointRecorder.Code, endpointRecorder.Body.String())
+	}
+
+	updated, err := db.GetDevice(device.ID)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	if updated.Endpoint != "198.51.100.88:51820" || updated.NATType != "p2v2:m=endpoint_independent;g=1;l=2" || !updated.Online {
+		t.Fatalf("device-only heartbeat did not publish the new incarnation: %+v", updated)
+	}
+
+	// A delayed duplicate may arrive after the daemon already published its
+	// endpoint. It must retain those facts as well as the registration sequence.
+	postHeartbeatReplayReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/devices",
+		strings.NewReader(`{"public_key":"device-reregister-key","device_name":"after","platform":"macos","network_id":"default","registration_incarnation":100}`),
+	)
+	postHeartbeatReplayReq.Header.Set("Authorization", "Bearer "+credential)
+	postHeartbeatReplayRecorder := httptest.NewRecorder()
+	register(postHeartbeatReplayRecorder, postHeartbeatReplayReq)
+	if postHeartbeatReplayRecorder.Code != http.StatusOK {
+		t.Fatalf("post-heartbeat same-incarnation replay: HTTP %d %s", postHeartbeatReplayRecorder.Code, postHeartbeatReplayRecorder.Body.String())
+	}
+	updated, err = db.GetDevice(device.ID)
+	if err != nil {
+		t.Fatalf("GetDevice after post-heartbeat replay: %v", err)
+	}
+	if updated.RegistrationSeq != 2 || updated.Endpoint != "198.51.100.88:51820" || updated.NATType != "p2v2:m=endpoint_independent;g=1;l=2" {
+		t.Fatalf("same-incarnation replay cleared live endpoint facts: %+v", updated)
+	}
+
+	listNodes := auth.RequireAnyAuth(service, db)(server.ListNodes)
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/nodes", nil)
+	listReq.Header.Set("Authorization", "Bearer "+credential)
+	listRecorder := httptest.NewRecorder()
+	listNodes(listRecorder, listReq)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("device credential did not authenticate roster fetch: HTTP %d %s", listRecorder.Code, listRecorder.Body.String())
+	}
+
+	relayTicket := auth.RequireDeviceAuth(db)(server.CreateRelayTicket)
+	ticketReq := httptest.NewRequest(http.MethodPost, "/api/v1/relay/tickets", strings.NewReader(`{"audience":"relay-test"}`))
+	ticketReq.Header.Set("Authorization", "Bearer "+credential)
+	ticketRecorder := httptest.NewRecorder()
+	relayTicket(ticketRecorder, ticketReq)
+	if ticketRecorder.Code != http.StatusOK {
+		t.Fatalf("device credential did not authenticate relay ticket fetch: HTTP %d %s", ticketRecorder.Code, ticketRecorder.Body.String())
+	}
+
+	newerReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/devices",
+		strings.NewReader(`{"public_key":"device-reregister-key","device_name":"newer","platform":"macos","network_id":"default","registration_incarnation":101}`),
+	)
+	newerReq.Header.Set("Authorization", "Bearer "+credential)
+	newerRecorder := httptest.NewRecorder()
+	register(newerRecorder, newerReq)
+	if newerRecorder.Code != http.StatusOK {
+		t.Fatalf("newer incarnation registration: HTTP %d %s", newerRecorder.Code, newerRecorder.Body.String())
+	}
+
+	staleReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/devices",
+		strings.NewReader(`{"public_key":"device-reregister-key","device_name":"late-old","platform":"macos","network_id":"default","registration_incarnation":100}`),
+	)
+	staleReq.Header.Set("Authorization", "Bearer "+credential)
+	staleRecorder := httptest.NewRecorder()
+	register(staleRecorder, staleReq)
+	if staleRecorder.Code != http.StatusConflict {
+		t.Fatalf("late older incarnation must be fenced: HTTP %d %s", staleRecorder.Code, staleRecorder.Body.String())
+	}
+	updated, err = db.GetDevice(device.ID)
+	if err != nil {
+		t.Fatalf("GetDevice after stale registration: %v", err)
+	}
+	if updated.DeviceName != "newer" || updated.RegistrationIncarnation != 101 || updated.RegistrationSeq != 3 {
+		t.Fatalf("stale registration overwrote newer daemon state: %+v", updated)
+	}
+}
+
+func TestRevokedDeviceCredentialCannotReregisterOrUpdateEndpoint(t *testing.T) {
+	db, err := database.New(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatalf("database.New: %v", err)
+	}
+	defer db.Close()
+
+	user, err := db.CreateUser("revoked-reregister@example.com", "hash")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	device, err := db.CreateDevice(user.ID, "default", "revoked-reregister-key", "device", "macos", "")
+	if err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	cred, credential, err := db.CreateDeviceCredential(device.ID, 3600)
+	if err != nil {
+		t.Fatalf("CreateDeviceCredential: %v", err)
+	}
+	if err := db.RevokeDeviceCredential(cred.ID); err != nil {
+		t.Fatalf("RevokeDeviceCredential: %v", err)
+	}
+
+	service := auth.NewService("revoked-reregister-test", db)
+	server := NewServer(service, nil, db)
+	register := auth.RequireAnyAuth(service, db)(server.RegisterDevice)
+	registrationReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/devices",
+		strings.NewReader(`{"public_key":"revoked-reregister-key","device_name":"stale","platform":"macos","network_id":"default"}`),
+	)
+	registrationReq.Header.Set("Authorization", "Bearer "+credential)
+	registrationRecorder := httptest.NewRecorder()
+	register(registrationRecorder, registrationReq)
+	if registrationRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked credential re-registration: HTTP %d %s", registrationRecorder.Code, registrationRecorder.Body.String())
+	}
+
+	endpoint := auth.RequireDeviceAuth(db)(server.UpdateDeviceEndpoint)
+	endpointReq := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/v1/devices/"+device.ID+"/endpoint",
+		strings.NewReader(`{"endpoint":"198.51.100.89:51820","nat_type":"unknown"}`),
+	)
+	endpointReq.SetPathValue("id", device.ID)
+	endpointReq.Header.Set("Authorization", "Bearer "+credential)
+	endpointRecorder := httptest.NewRecorder()
+	endpoint(endpointRecorder, endpointReq)
+	if endpointRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked credential endpoint update: HTTP %d %s", endpointRecorder.Code, endpointRecorder.Body.String())
+	}
+}
+
 func TestUpdateDeviceChangesVirtualIP(t *testing.T) {
 	db, err := database.New(filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {

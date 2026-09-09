@@ -1,11 +1,15 @@
 pub(super) async fn maybe_add_port_mapping_udp_candidate(
     udp_local_addr: Option<SocketAddr>,
+    existing_candidates: &[String],
+    existing_candidate_sources: &HashMap<String, String>,
     candidates: &mut Vec<String>,
     candidate_sources: &mut HashMap<String, String>,
     runtime: Arc<RwLock<GatewayMappingRuntime>>,
     diagnostics: Arc<RwLock<GatewayMappingDiagnostics>>,
 ) {
-    let Some(local_addr) = port_mapping_local_addr(udp_local_addr, candidates, candidate_sources)
+    let gateway = default_ipv4_gateway().await;
+    let Some(local_addr) =
+        port_mapping_local_addr(udp_local_addr, existing_candidates, existing_candidate_sources, gateway)
     else {
         let mut diagnostics = diagnostics.write().await;
         diagnostics.local_endpoint = None;

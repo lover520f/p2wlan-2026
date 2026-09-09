@@ -16,10 +16,14 @@
 //! re-seed after a clock rollback would otherwise let an older incarnation
 //! look newer than the high-water a receiver already recorded.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex, OnceLock,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
@@ -56,6 +60,13 @@ pub struct IncarnationState {
 /// path (`next_candidate_generation`) without re-reading the state file.
 static LOCAL_INCARNATION: AtomicU64 = AtomicU64::new(0);
 
+/// A room profile is registered before Android creates its daemon.  Keep the
+/// durable incarnation reserved for that registration until the immediately
+/// following `Daemon::new` consumes it.  The key is the profile path, not the
+/// state-file directory: several room profiles can legitimately share an app
+/// directory and must never consume one another's reservation.
+static PREPARED_BOOT_INCARNATIONS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+
 /// Record the incarnation of the current boot for this process.
 pub fn set_local_incarnation(incarnation: u64) {
     LOCAL_INCARNATION.store(incarnation, Ordering::Relaxed);
@@ -64,6 +75,85 @@ pub fn set_local_incarnation(incarnation: u64) {
 /// The current boot's incarnation, or 0 when no daemon was constructed yet.
 pub fn local_incarnation() -> u64 {
     LOCAL_INCARNATION.load(Ordering::Relaxed)
+}
+
+fn prepared_boot_incarnations() -> &'static Mutex<HashMap<PathBuf, u64>> {
+    PREPARED_BOOT_INCARNATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Reserve an incarnation for a pre-daemon authenticated registration.
+///
+/// Android prepares a room profile by registering it before it owns the VPN
+/// fd and creates the daemon.  That registration and the daemon it launches
+/// form one boot, so they must use the same incarnation. A caller that retries
+/// before discarding its failed preparation reuses the same reservation;
+/// Android discards failed preparations so a later user-initiated start is a
+/// separate boot.
+///
+/// Call [`take_prepared_or_next_boot_incarnation`] when constructing the
+/// daemon.  Other callers should continue to use [`next_boot_incarnation`].
+pub fn reserve_boot_incarnation(config: &Config) -> Option<u64> {
+    let Some(config_path) = config.config_path.clone() else {
+        return next_boot_incarnation(config);
+    };
+
+    let mut prepared = prepared_boot_incarnations()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(&incarnation) = prepared.get(&config_path) {
+        set_local_incarnation(incarnation);
+        return Some(incarnation);
+    }
+
+    let incarnation = next_boot_incarnation(config)?;
+    prepared.insert(config_path, incarnation);
+    Some(incarnation)
+}
+
+/// Consume a room-preparation reservation, or reserve a normal new boot.
+///
+/// This is the daemon-construction counterpart of
+/// [`reserve_boot_incarnation`].  A reservation is intentionally single-use:
+/// the next daemon start after it has been consumed is a distinct boot and
+/// must advance the durable counter.
+pub fn take_prepared_or_next_boot_incarnation(config: &Config) -> Option<u64> {
+    if let Some(config_path) = config.config_path.as_ref() {
+        let prepared = prepared_boot_incarnations()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(config_path);
+        if let Some(incarnation) = prepared {
+            set_local_incarnation(incarnation);
+            return Some(incarnation);
+        }
+    }
+
+    next_boot_incarnation(config)
+}
+
+/// Discard a pre-daemon reservation that will not lead to a daemon boot.
+///
+/// Android calls this when room registration, the final start-state check, or
+/// profile persistence fails.  It only removes the matching profile's
+/// reservation; a successful room preparation must leave its reservation in
+/// place for [`take_prepared_or_next_boot_incarnation`].
+pub fn discard_prepared_boot_incarnation(config: &Config) {
+    let Some(config_path) = config.config_path.as_ref() else {
+        return;
+    };
+
+    let discarded = prepared_boot_incarnations()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(config_path);
+    if discarded.is_some_and(|incarnation| local_incarnation() == incarnation) {
+        set_local_incarnation(0);
+    }
+}
+
+fn disable_local_incarnation() -> Option<u64> {
+    set_local_incarnation(0);
+    None
 }
 
 pub fn incarnation_path(config: &Config) -> Option<PathBuf> {
@@ -187,7 +277,7 @@ pub fn next_boot_incarnation(config: &Config) -> Option<u64> {
             warn!(
                 "Fresh-mapping prediction disabled: no config path, so no durable incarnation state exists for this boot"
             );
-            return None;
+            return disable_local_incarnation();
         }
     };
     let lock_path = path
@@ -231,7 +321,7 @@ pub fn next_boot_incarnation(config: &Config) -> Option<u64> {
                     "Fresh-mapping prediction disabled: cannot open the incarnation lock at {}: {error}",
                     lock_path.display()
                 );
-                return None;
+                return disable_local_incarnation();
             }
         };
         if let Err(error) = lock_file.lock_exclusive() {
@@ -239,7 +329,7 @@ pub fn next_boot_incarnation(config: &Config) -> Option<u64> {
                 "Fresh-mapping prediction disabled: cannot lock the incarnation state at {}: {error}",
                 lock_path.display()
             );
-            return None;
+            return disable_local_incarnation();
         }
         let lock_guard = LockGuard(lock_file);
 
@@ -250,7 +340,7 @@ pub fn next_boot_incarnation(config: &Config) -> Option<u64> {
                     "Fresh-mapping prediction disabled for this boot: the persisted incarnation at {} is missing its trusted monotonic state (corrupt, unreadable, or an incompatible version); refusing to re-seed from the wall clock. Remove the file to re-seed deliberately.",
                     path.display()
                 );
-                return None;
+                return disable_local_incarnation();
             }
         };
         let loaded = match loaded {
@@ -267,7 +357,7 @@ pub fn next_boot_incarnation(config: &Config) -> Option<u64> {
                         path.display(),
                         lock_path.display()
                     );
-                    return None;
+                    return disable_local_incarnation();
                 }
                 state_loss_confirms -= 1;
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -289,7 +379,7 @@ pub fn next_boot_incarnation(config: &Config) -> Option<u64> {
                         "Fresh-mapping prediction disabled: failed to persist the first-boot incarnation at {}: {error}",
                         path.display()
                     );
-                    return None;
+                    return disable_local_incarnation();
                 }
                 set_local_incarnation(seed.incarnation);
                 return Some(seed.incarnation);
@@ -300,7 +390,7 @@ pub fn next_boot_incarnation(config: &Config) -> Option<u64> {
                 "Fresh-mapping prediction disabled: the persisted incarnation {} reached the u64 limit; refusing to wrap back to a value receivers already recorded",
                 loaded.incarnation
             );
-            return None;
+            return disable_local_incarnation();
         };
         let state = IncarnationState {
             version: INCARNATION_VERSION,
@@ -312,7 +402,7 @@ pub fn next_boot_incarnation(config: &Config) -> Option<u64> {
                 "Fresh-mapping prediction disabled: failed to persist the incremented incarnation at {}: {error}",
                 path.display()
             );
-            return None;
+            return disable_local_incarnation();
         }
         break next;
     };
@@ -402,6 +492,68 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(state.incarnation, second);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pre_registration_reservation_is_reused_once_by_the_daemon_boot() {
+        let dir = isolate("pre-registration");
+        let config = temp_config(Some(dir.join("room-profile.json")));
+
+        let prepared = reserve_boot_incarnation(&config)
+            .expect("room preparation must reserve a durable incarnation");
+        assert_eq!(
+            reserve_boot_incarnation(&config),
+            Some(prepared),
+            "a retried room registration must keep the same server-side fence"
+        );
+        assert_eq!(
+            take_prepared_or_next_boot_incarnation(&config),
+            Some(prepared),
+            "the following daemon must consume the pre-registration value"
+        );
+
+        let following_boot = take_prepared_or_next_boot_incarnation(&config)
+            .expect("a later daemon start reserves a new value");
+        assert!(
+            following_boot > prepared,
+            "the reservation is single-use and must not mask a real restart"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pre_registration_reservations_are_scoped_to_each_profile_path() {
+        let dir = isolate("profile-scoped-pre-registration");
+        let first = temp_config(Some(dir.join("room-a.json")));
+        let second = temp_config(Some(dir.join("room-b.json")));
+
+        let first_reserved = reserve_boot_incarnation(&first).unwrap();
+        let second_reserved = reserve_boot_incarnation(&second).unwrap();
+        assert_ne!(first_reserved, second_reserved);
+        assert_eq!(
+            take_prepared_or_next_boot_incarnation(&first),
+            Some(first_reserved)
+        );
+        assert_eq!(
+            take_prepared_or_next_boot_incarnation(&second),
+            Some(second_reserved)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discarded_pre_registration_reservation_cannot_be_consumed_by_a_later_boot() {
+        let dir = isolate("discarded-pre-registration");
+        let config = temp_config(Some(dir.join("room-profile.json")));
+
+        let discarded = reserve_boot_incarnation(&config).unwrap();
+        discard_prepared_boot_incarnation(&config);
+        let later_boot = take_prepared_or_next_boot_incarnation(&config).unwrap();
+        assert!(
+            later_boot > discarded,
+            "a failed room preparation must not leak its lifecycle into a later start"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

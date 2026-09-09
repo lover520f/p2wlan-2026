@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
 import '../daemon/daemon_controller.dart';
+import '../diagnostics/support_log_protocol.dart';
 import '../models/diagnostics_models.dart';
 import 'room_api.dart';
 import 'room_profiles.dart';
@@ -75,7 +77,12 @@ class ParallelRooms extends ChangeNotifier {
   final _sessions = <String, ParallelRoomSession>{};
   final _operations = <String, Future<DaemonCommandResult>>{};
   final _recovering = <String>{};
+  final _recentRoomSnapshots = <String, DiagnosticsSnapshot?>{};
+  final _recentRoomPlans = <String, ParallelRoomPlan>{};
+  final _recentRoomPhases = <String, RoomConnectionPhase>{};
+  final _recentRoomMessages = <String, String>{};
   Timer? _timer;
+  Duration? _scheduledInterval;
   var _credentials = '';
   var _epoch = 0;
   var _admissionPauses = 0;
@@ -84,6 +91,97 @@ class ParallelRooms extends ChangeNotifier {
   String? lastError;
 
   Map<String, ParallelRoomSession> get sessions => Map.unmodifiable(_sessions);
+  Map<String, DiagnosticsSnapshot?> get recentRoomSnapshots =>
+      Map.unmodifiable(_recentRoomSnapshots);
+  List<String> get supportLogProfileCandidates {
+    final ids = <String>[];
+    void add(String id) {
+      if (!ids.contains(id)) {
+        ids.add(id);
+      }
+    }
+
+    for (final s in _sessions.values) {
+      if (!_isCurrentAccountPlan(s.plan)) continue;
+      add(s.plan.profileId);
+    }
+    // The map is an LRU-style bounded history.  Prefer the most recently
+    // stopped/failed rooms after all live rooms, so a support bundle stays
+    // within the v2 eight-room contract without losing the latest failure.
+    for (final id in _recentRoomPlans.keys.toList().reversed) {
+      final plan = _recentRoomPlans[id];
+      if (plan == null || !_isCurrentAccountPlan(plan)) continue;
+      add(id);
+    }
+    return List.unmodifiable(ids);
+  }
+
+  SupportLogRoomSelection get supportLogSelection =>
+      selectSupportLogRoomProfiles(supportLogProfileCandidates);
+
+  List<String> get allRecentRoomProfileIds =>
+      supportLogSelection.retainedProfileIds;
+
+  Map<String, String> exportStatusSummaries() {
+    final summaries = <String, String>{};
+    for (final id in allRecentRoomProfileIds) {
+      ParallelRoomSession? active;
+      for (final s in _sessions.values) {
+        if (s.plan.profileId == id) {
+          active = s;
+          break;
+        }
+      }
+      final snapshot = active?.snapshot ?? _recentRoomSnapshots[id];
+      final plan = active?.plan ?? _recentRoomPlans[id];
+      if (plan != null) {
+        final phase =
+            active?.phase ??
+            _recentRoomPhases[id] ??
+            RoomConnectionPhase.unavailable;
+        final message = active?.message ?? _recentRoomMessages[id];
+        summaries[id] = jsonEncode({
+          'network_id': plan.room.id,
+          'room_name': plan.room.name,
+          'profile_id': id,
+          'phase': phase.name,
+          if (message != null && message.isNotEmpty) 'message': message,
+          if (snapshot != null) 'last_status': snapshot.raw,
+        });
+      }
+    }
+    return summaries;
+  }
+
+  void _rememberRoom(
+    ParallelRoomPlan plan, {
+    DiagnosticsSnapshot? snapshot,
+    bool replaceSnapshot = false,
+    RoomConnectionPhase? phase,
+    String? message,
+  }) {
+    // A late status/start failure from the previous account must never make
+    // its room path eligible for the next account's support upload.
+    if (!_isCurrentAccountPlan(plan)) return;
+    final id = plan.profileId;
+    _recentRoomPlans.remove(id);
+    _recentRoomPlans[id] = plan;
+    if (replaceSnapshot) _recentRoomSnapshots[id] = snapshot;
+    if (phase != null) _recentRoomPhases[id] = phase;
+    if (message == null || message.isEmpty) {
+      _recentRoomMessages.remove(id);
+    } else {
+      _recentRoomMessages[id] = message;
+    }
+    while (_recentRoomPlans.length > maxTrackedSupportLogRoomInstances) {
+      final oldest = _recentRoomPlans.keys.first;
+      _recentRoomPlans.remove(oldest);
+      _recentRoomSnapshots.remove(oldest);
+      _recentRoomPhases.remove(oldest);
+      _recentRoomMessages.remove(oldest);
+    }
+  }
+
   bool get hasSessions =>
       _sessions.isNotEmpty || _operations.isNotEmpty || _recovering.isNotEmpty;
   int get activeConnections => _sessions.length;
@@ -96,11 +194,21 @@ class ParallelRooms extends ChangeNotifier {
   String _credentialKey(AppSettings value) =>
       '${value.controlServer}\n${value.authToken}';
 
+  bool _isCurrentAccountPlan(ParallelRoomPlan plan) {
+    final planCredentials = _credentialKey(plan.settings);
+    return planCredentials == _credentials &&
+        planCredentials == _credentialKey(readSettings());
+  }
+
   Future<DaemonCommandResult> credentialsChanged() {
     final next = _credentialKey(readSettings());
     if (next == _credentials) return Future.value(_ok());
     _credentials = next;
     _epoch++;
+    _recentRoomPlans.clear();
+    _recentRoomSnapshots.clear();
+    _recentRoomPhases.clear();
+    _recentRoomMessages.clear();
     return stopAll();
   }
 
@@ -194,6 +302,12 @@ class ParallelRooms extends ChangeNotifier {
     if (conflict != null) return _fail(conflict);
     final entry = ParallelRoomSession(plan, runtimeFactory(plan));
     _sessions[room.id] = entry;
+    _rememberRoom(
+      plan,
+      snapshot: null,
+      replaceSnapshot: true,
+      phase: RoomConnectionPhase.starting,
+    );
     _notify();
     DaemonCommandResult started;
     try {
@@ -202,13 +316,24 @@ class ParallelRooms extends ChangeNotifier {
       started = _fail('房间启动失败，需要清理本地运行时');
     }
     if (!started.ok || !_accepts(epoch, credentials)) {
+      entry.phase = RoomConnectionPhase.failed;
+      entry.message = started.ok
+          ? '登录状态已变化，连接已取消'
+          : (started.message.isEmpty ? '房间启动失败' : started.message);
+      _rememberRoom(
+        entry.plan,
+        snapshot: entry.snapshot,
+        replaceSnapshot: true,
+        phase: entry.phase,
+        message: entry.message,
+      );
       final cleanup = await _disconnect(room.id);
       return cleanup.ok
           ? (started.ok ? _fail('登录状态已变化，连接已取消') : started)
           : cleanup;
     }
     await _refresh(entry);
-    _ensureTimer();
+    _schedulePoll();
     if (entry.phase != RoomConnectionPhase.running) {
       return _fail('房间进程已启动，但地址或路由尚未就绪；可重试状态检查或断开');
     }
@@ -235,6 +360,9 @@ class ParallelRooms extends ChangeNotifier {
   Future<DaemonCommandResult> _disconnect(String id) async {
     final entry = _sessions[id];
     if (entry == null) return _ok();
+    final previousSnapshot = entry.snapshot;
+    final previousPhase = entry.phase;
+    final previousMessage = entry.message;
     entry.revision++;
     entry.phase = RoomConnectionPhase.stopping;
     entry.snapshot = null;
@@ -247,15 +375,39 @@ class ParallelRooms extends ChangeNotifier {
     }
     if (result.ok) {
       _sessions.remove(id);
+      final retainedFailure =
+          previousPhase == RoomConnectionPhase.failed ||
+          previousPhase == RoomConnectionPhase.unavailable;
+      _rememberRoom(
+        entry.plan,
+        snapshot: previousSnapshot,
+        replaceSnapshot: true,
+        phase: retainedFailure
+            ? previousPhase
+            : RoomConnectionPhase.unavailable,
+        message: retainedFailure ? previousMessage : '房间运行时已停止；保留本次实例日志供支持分析',
+      );
       entry.runtime.close();
     } else {
       entry.phase = RoomConnectionPhase.failed;
-      entry.message = '停止失败，运行时仍被保留，请重试断开';
+      entry.message = previousMessage == null || previousMessage.isEmpty
+          ? '停止失败，运行时仍被保留，请重试断开'
+          : '$previousMessage；停止失败，运行时仍被保留，请重试断开';
+      _rememberRoom(
+        entry.plan,
+        snapshot: previousSnapshot,
+        replaceSnapshot: true,
+        phase: entry.phase,
+        message: entry.message,
+      );
       lastError = entry.message;
     }
     if (_sessions.isEmpty) {
       _timer?.cancel();
       _timer = null;
+      _scheduledInterval = null;
+    } else {
+      _schedulePoll();
     }
     _notify();
     return result;
@@ -343,15 +495,35 @@ class ParallelRooms extends ChangeNotifier {
         final runtime = runtimeFactory(plan);
         final entry = ParallelRoomSession(plan, runtime);
         _sessions[room.id] = entry;
+        _rememberRoom(
+          plan,
+          snapshot: null,
+          replaceSnapshot: true,
+          phase: RoomConnectionPhase.starting,
+        );
         try {
           if (!await runtime.exists()) {
             _sessions.remove(room.id);
+            _rememberRoom(
+              plan,
+              snapshot: null,
+              replaceSnapshot: true,
+              phase: RoomConnectionPhase.unavailable,
+              message: '未发现房间运行时；保留本次实例日志供支持分析',
+            );
             runtime.close();
             return _ok();
           }
         } catch (_) {
           entry.phase = RoomConnectionPhase.failed;
           entry.message = '无法确认房间进程状态，请重试断开';
+          _rememberRoom(
+            plan,
+            snapshot: null,
+            replaceSnapshot: true,
+            phase: entry.phase,
+            message: entry.message,
+          );
           return _fail(entry.message!);
         }
         if (_credentialKey(account) != _credentialKey(readSettings()) ||
@@ -359,7 +531,7 @@ class ParallelRooms extends ChangeNotifier {
           return _disconnect(room.id);
         }
         await _refresh(entry);
-        _ensureTimer();
+        _schedulePoll();
         return _ok();
       });
     } finally {
@@ -386,6 +558,12 @@ class ParallelRooms extends ChangeNotifier {
       entry.snapshot = snapshot;
       entry.phase = RoomConnectionPhase.running;
       entry.message = null;
+      _rememberRoom(
+        entry.plan,
+        snapshot: snapshot,
+        replaceSnapshot: true,
+        phase: entry.phase,
+      );
     } catch (_) {
       if (!_disposed &&
           revision == entry.revision &&
@@ -393,24 +571,109 @@ class ParallelRooms extends ChangeNotifier {
         entry.snapshot = null;
         entry.phase = RoomConnectionPhase.unavailable;
         entry.message = '运行时或路由不可用；未显示过期的在线状态';
+        _rememberRoom(
+          entry.plan,
+          snapshot: null,
+          replaceSnapshot: true,
+          phase: entry.phase,
+          message: entry.message,
+        );
       }
     } finally {
       entry.refreshing = false;
       _notify();
+      _schedulePoll();
     }
   }
 
-  void _ensureTimer() {
-    if (_disposed || refreshInterval <= Duration.zero || _timer != null) return;
-    _timer = Timer.periodic(refreshInterval, (_) {
-      for (final entry in _sessions.values.toList()) {
-        if (entry.phase != RoomConnectionPhase.starting &&
-            entry.phase != RoomConnectionPhase.stopping &&
-            entry.phase != RoomConnectionPhase.failed) {
-          unawaited(_refresh(entry));
-        }
+  bool _isPeerTransitional(PeerSnapshot p) {
+    if (!p.online) return false;
+    final state = p.state.toLowerCase();
+    if (state.contains('connect') ||
+        state.contains('handshake') ||
+        state.contains('prob') ||
+        state.contains('punch')) {
+      return true;
+    }
+    if (p.path == 'probing' || p.path == 'direct_trial') return true;
+    if (p.path == 'relay' && !p.isRelayVerified) return true;
+    if (p.path == 'direct' && !p.isDirectVerified) return true;
+    return false;
+  }
+
+  bool _isSessionTransitional(ParallelRoomSession entry) {
+    if (entry.phase == RoomConnectionPhase.starting) return true;
+    if (entry.phase == RoomConnectionPhase.running) {
+      final snap = entry.snapshot;
+      if (snap == null || snap.peerSnapshotStale) return true;
+      final onlinePeers = snap.peers.where((p) => p.online);
+      if (onlinePeers.any(_isPeerTransitional)) {
+        return true;
       }
-    });
+    }
+    return false;
+  }
+
+  bool _hasTransitionalSession() {
+    return _sessions.values.any(_isSessionTransitional);
+  }
+
+  Duration get _currentPollingInterval {
+    if (refreshInterval <= Duration.zero) return Duration.zero;
+    if (_hasTransitionalSession()) {
+      return refreshInterval < const Duration(milliseconds: 500)
+          ? refreshInterval
+          : const Duration(milliseconds: 500);
+    }
+    return refreshInterval;
+  }
+
+  void _schedulePoll() {
+    if (_disposed ||
+        refreshInterval <= Duration.zero ||
+        _sessions.isEmpty ||
+        !hasListeners) {
+      _timer?.cancel();
+      _timer = null;
+      _scheduledInterval = null;
+      return;
+    }
+    final interval = _currentPollingInterval;
+    if (_timer != null && _scheduledInterval == interval) {
+      return;
+    }
+    _timer?.cancel();
+    _scheduledInterval = interval;
+    _timer = Timer(interval, _onPollTimer);
+  }
+
+  void _onPollTimer() {
+    _timer = null;
+    _scheduledInterval = null;
+    if (_disposed || _sessions.isEmpty || !hasListeners) return;
+    for (final entry in _sessions.values.toList()) {
+      if (entry.phase != RoomConnectionPhase.stopping &&
+          entry.phase != RoomConnectionPhase.failed) {
+        unawaited(_refresh(entry));
+      }
+    }
+    _schedulePoll();
+  }
+
+  @override
+  void addListener(VoidCallback listener) {
+    super.addListener(listener);
+    _schedulePoll();
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    super.removeListener(listener);
+    if (!hasListeners) {
+      _timer?.cancel();
+      _timer = null;
+      _scheduledInterval = null;
+    }
   }
 
   void _notify() {
@@ -422,6 +685,8 @@ class ParallelRooms extends ChangeNotifier {
     if (_disposed) return;
     _disposed = true;
     _timer?.cancel();
+    _timer = null;
+    _scheduledInterval = null;
     unawaited(stopAll());
     super.dispose();
   }

@@ -152,7 +152,8 @@ impl Daemon {
         // unwritable state directory, or the counter exhausted): fresh-mapping
         // prediction is disabled rather than silently re-seeded from the wall
         // clock, which could regress below the high-water receivers recorded.
-        let boot_epoch_ms = crate::incarnation::next_boot_incarnation(&config).unwrap_or(0);
+        let boot_epoch_ms = crate::incarnation::take_prepared_or_next_boot_incarnation(&config)
+            .unwrap_or(0);
         // An incarnation that outgrew the 41-bit candidate-generation
         // encoding field also disables fresh prediction (the label must never
         // wrap): ordinary signaling continues with the legacy generation 0.

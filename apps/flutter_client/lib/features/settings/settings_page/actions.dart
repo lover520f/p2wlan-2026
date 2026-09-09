@@ -282,7 +282,13 @@ extension _SettingsPageActions on _SettingsPageState {
       _logUploadError = null;
     });
     try {
-      final bundle = await CurrentSessionLogBundle.collectCurrentStartup();
+      final parallel = widget.statusStore.parallelRooms;
+      final activeRoomProfileIds = parallel.supportLogProfileCandidates;
+      final dynamicSummaries = parallel.exportStatusSummaries();
+      final bundle = await CurrentSessionLogBundle.collectCurrentStartup(
+        activeRoomProfileIds: activeRoomProfileIds,
+        dynamicSummaries: dynamicSummaries,
+      );
       final result = await _controlApi.uploadSupportLogs(
         controlServer: settings.controlServer,
         authToken: authToken,
@@ -290,9 +296,13 @@ extension _SettingsPageActions on _SettingsPageState {
         clientBuild: ClientBuildInfo.current,
         daemonBuild: widget.statusStore.daemonController.lastDaemonBuildInfo,
         files: bundle.files,
+        omittedRoomProfileIds: bundle.omittedRoomProfileIds,
       );
       if (mounted) {
-        _showSnackBar(strings.logsUploaded(result.uploadId));
+        final message = result.instances > 1
+            ? '${strings.logsUploaded(result.uploadId)} (${result.instances} 个实例)'
+            : strings.logsUploaded(result.uploadId);
+        _showSnackBar(message);
       }
     } catch (error) {
       if (mounted) {
@@ -329,7 +339,8 @@ extension _SettingsPageActions on _SettingsPageState {
 
   void _showSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }

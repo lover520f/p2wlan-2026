@@ -37,6 +37,13 @@ async fn signal_websocket_authenticates_negotiates_and_wakes() {
                             .and_then(|value| value.to_str().ok()),
                         Some(SIGNAL_WS_PROTOCOL)
                     );
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("x-p2wlan-registration-seq")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("37")
+                    );
                     response.headers_mut().insert(
                         SEC_WEBSOCKET_PROTOCOL,
                         HeaderValue::from_static(SIGNAL_WS_PROTOCOL),
@@ -87,6 +94,7 @@ async fn signal_websocket_authenticates_negotiates_and_wakes() {
             "dc-test-token",
             "node-a",
             "network-a",
+            Some(37),
             wake_tx,
             client_connected,
         )

@@ -553,3 +553,79 @@ async fn stale_nominated_trial_expires_and_falls_back_to_relay() {
     );
     assert!(!pair.probe_due);
 }
+
+#[tokio::test]
+async fn nat_profile_update_ignores_observation_jitter_and_advances_on_capability_change() {
+    let config = test_config();
+    let manager = PeerManager::new(config);
+
+    let mut profile = birthday_nat_profile();
+    profile.observations = vec![p2pnet_nat::StunObservation {
+        server: "stun1.example.com".to_string(),
+        mapped_address: Some("203.0.113.10:40007".to_string()),
+        rtt_ms: Some(25),
+        error: None,
+    }];
+
+    // 1. Initial profile update sets generation 1
+    manager.update_nat_profile(profile.clone()).await;
+    let gen1 = manager.current_local_profile_generation_sync();
+    assert_eq!(gen1, 1, "first profile update sets generation 1");
+
+    // 2. STUN RTT jitter / transient observation update must NOT advance generation
+    let mut rtt_jitter_profile = profile.clone();
+    rtt_jitter_profile.observations[0].rtt_ms = Some(85);
+    manager.update_nat_profile(rtt_jitter_profile).await;
+    let gen2 = manager.current_local_profile_generation_sync();
+    assert_eq!(
+        gen2, gen1,
+        "observation RTT jitter must not advance local_profile_generation"
+    );
+
+    // 3. Substantive capability change MUST advance generation
+    let mut capability_changed_profile = profile.clone();
+    capability_changed_profile.mapping_behavior = p2pnet_nat::MappingBehavior::EndpointIndependent;
+    manager.update_nat_profile(capability_changed_profile).await;
+    let gen3 = manager.current_local_profile_generation_sync();
+    assert_eq!(
+        gen3, 2,
+        "substantive capability change must advance local_profile_generation"
+    );
+}
+
+#[tokio::test]
+async fn nat_profile_publication_tracks_real_observations_separately_from_capabilities() {
+    let manager = PeerManager::new(test_config());
+    let mut profile = birthday_nat_profile();
+    profile.observations = vec![p2pnet_nat::StunObservation {
+        server: "stun1.example.com".to_string(),
+        mapped_address: Some("203.0.113.10:40007".to_string()),
+        rtt_ms: Some(25),
+        error: None,
+    }];
+
+    let first = manager.update_nat_profile(profile.clone()).await;
+    assert_eq!(first.generation, 1);
+    assert_eq!(first.observation, Some(1));
+    assert!(first.observation_advanced);
+
+    // A second live STUN result with the same traversal capability advances
+    // only `o`, so peers can renew freshness without tearing down sessions.
+    let mut same_capability = profile.clone();
+    same_capability.observations[0].rtt_ms = Some(90);
+    let second = manager.update_nat_profile(same_capability).await;
+    assert_eq!(second.generation, first.generation);
+    assert_eq!(second.observation, Some(2));
+    assert_eq!(manager.current_local_profile_observation_sync(), Some(2));
+
+    // A gather without a server-reflexive response never reuses o=2. This is
+    // the state a control heartbeat must carry until another live success.
+    let mut no_live_observation = profile.clone();
+    no_live_observation.observations[0].mapped_address = None;
+    no_live_observation.observations[0].error = Some("timeout".to_string());
+    let no_observation = manager.update_nat_profile(no_live_observation).await;
+    assert_eq!(no_observation.generation, first.generation);
+    assert_eq!(no_observation.observation, None);
+    assert!(!no_observation.observation_advanced);
+    assert_eq!(manager.current_local_profile_observation_sync(), None);
+}

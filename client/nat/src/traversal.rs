@@ -302,6 +302,19 @@ impl NatProfileEvidence {
 pub struct RemoteNatProfile {
     pub capabilities: NatCapabilities,
     pub generation: Option<u64>,
+    /// Server-issued lifecycle for the remote registration. A newer lifecycle
+    /// deliberately resets the producer's local generation/observation
+    /// counters; a delayed older lifecycle is rejected before it can do so.
+    #[serde(default)]
+    pub registration_lifecycle: Option<u64>,
+    /// Monotonic sequence of the remote's latest real NAT observation.
+    ///
+    /// A repeated control heartbeat carries the same value and must not renew
+    /// `received_at_ms`; a strictly newer value has crossed a fresh STUN
+    /// measurement and may renew it without forcing a capability generation
+    /// change.
+    #[serde(default)]
+    pub observation_sequence: Option<u64>,
     pub received_at_ms: u64,
 }
 

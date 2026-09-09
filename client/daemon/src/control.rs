@@ -48,19 +48,19 @@ pub use http::proxy_consults_environment;
 /// Short, non-sensitive HTTP proxy behavior label (diagnostics/structured
 /// events).  See [`control::proxy`](crate::control::proxy) for the policy.
 pub use http::proxy_http_behavior_label;
-#[cfg(test)]
-use http::register_device_payload;
 pub(crate) use http::{
     candidate_generation_incarnation, candidate_generation_is_malformed_encoded,
     candidate_generation_predecessor_floor,
 };
 use http::{
-    create_tunnel, fetch_relay_ticket_http, normalize_http_base_url, obtain_device_credential,
-    poll_peers, poll_signals, prepare_signal_payload, register_device, release_presence,
-    route_aware_control_http_clients, send_prepared_signal, send_signal, update_endpoint,
-    RouteAwareControlHttpClient, SignalDeliveryTracker, SignalSigningIdentity,
-    SIGNAL_REST_PROTOCOL_VERSION,
+    control_label_with_registration_seq, create_tunnel, fetch_relay_ticket_http,
+    normalize_http_base_url, obtain_device_credential, poll_peers, poll_signals,
+    prepare_signal_payload, register_device, release_presence, route_aware_control_http_clients,
+    send_prepared_signal, send_signal, update_endpoint, RouteAwareControlHttpClient,
+    SignalDeliveryTracker, SignalSigningIdentity, SIGNAL_REST_PROTOCOL_VERSION,
 };
+#[cfg(test)]
+use http::{register_device_payload, register_device_payload_with_incarnation};
 use websocket::spawn_signal_websocket;
 /// Stable WebSocket proxy policy label (`direct_only`).  Signaling never rides
 /// an ambient proxy.

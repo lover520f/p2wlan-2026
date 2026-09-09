@@ -205,7 +205,11 @@ void main() {
       final connecting = manager.connect(room(1));
       await Future<void>.delayed(Duration.zero);
       settings = settings.copyWith(authToken: token('other'));
+      expect(manager.allRecentRoomProfileIds, isEmpty);
+      expect(manager.exportStatusSummaries(), isEmpty);
       final stopped = manager.credentialsChanged();
+      expect(manager.allRecentRoomProfileIds, isEmpty);
+      expect(manager.exportStatusSummaries(), isEmpty);
       gate.complete();
       expect((await connecting).ok, isFalse);
       expect((await stopped).ok, isTrue);
@@ -313,6 +317,59 @@ void main() {
       expect(runtimes[room(1).id]!.closed, isFalse);
     },
   );
+
+  for (final failure in ['start', 'first status']) {
+    test(
+      'retains a current-account support summary after $failure failure and cleanup',
+      () async {
+        configure = (runtime) {
+          runtime.failStart = failure == 'start';
+          runtime.failStatus = failure == 'first status';
+        };
+
+        final result = await manager.connect(room(1));
+        expect(result.ok, isFalse);
+        final profileId = runtimes[room(1).id]!.plan.profileId;
+        if (manager.session(room(1).id) != null) {
+          expect((await manager.disconnect(room(1).id)).ok, isTrue);
+        }
+
+        expect(manager.session(room(1).id), isNull);
+        expect(manager.allRecentRoomProfileIds, contains(profileId));
+        final summary =
+            jsonDecode(manager.exportStatusSummaries()[profileId]!)
+                as Map<String, dynamic>;
+        expect(summary['network_id'], room(1).id);
+        expect(summary['profile_id'], profileId);
+        expect(summary['phase'], failure == 'start' ? 'failed' : 'unavailable');
+        expect(summary['message'], isNotEmpty);
+
+        // Histories belong only to the credential scope that created them.
+        settings = settings.copyWith(authToken: token('another-account'));
+        expect((await manager.credentialsChanged()).ok, isTrue);
+        expect(manager.allRecentRoomProfileIds, isEmpty);
+        expect(manager.exportStatusSummaries(), isEmpty);
+      },
+    );
+  }
+
+  test('support log history retains the newest eight room instances', () async {
+    for (var number = 1; number <= 9; number++) {
+      configure = (runtime) => runtime.failStart = true;
+      expect((await manager.connect(room(number))).ok, isFalse);
+    }
+
+    final retained = manager.allRecentRoomProfileIds;
+    expect(retained, hasLength(8));
+    expect(
+      retained,
+      isNot(contains(ParallelRoomPlan(settings, room(1)).profileId)),
+    );
+    expect(retained, contains(ParallelRoomPlan(settings, room(9)).profileId));
+    expect(manager.supportLogSelection.omittedProfileIds, [
+      ParallelRoomPlan(settings, room(1)).profileId,
+    ]);
+  });
 
   test('CIDR overlap checks ranges not strings and rejects malformed data', () {
     expect(cidrsOverlap('10.0.0.0/8', '10.21.9.0/24'), isTrue);

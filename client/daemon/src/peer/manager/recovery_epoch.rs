@@ -529,6 +529,12 @@ impl PeerManager {
             return RecoveryAdmission::BudgetExhausted { epoch: entry.epoch };
         }
         if entry.budget_exhausted {
+            // When an epoch has exhausted its probe credits (0 remaining), unfreezing
+            // without new evidence would only trigger immediate zero-send re-exhaustion loops.
+            // Retain dormant sleep until new evidence or max age rotation.
+            if entry.epoch_probe_credit_remaining == 0 {
+                return RecoveryAdmission::BudgetExhausted { epoch: entry.epoch };
+            }
             // The controlled backoff elapsed: unfreeze and record that the
             // re-open was backoff-driven (observable, budgeted, not churn).
             entry.budget_exhausted = false;
@@ -542,6 +548,9 @@ impl PeerManager {
                 peer_id,
                 entry.epoch,
             );
+        }
+        if entry.epoch_probe_credit_remaining == 0 {
+            return RecoveryAdmission::BudgetExhausted { epoch: entry.epoch };
         }
         RecoveryAdmission::Accepted { epoch: entry.epoch }
     }

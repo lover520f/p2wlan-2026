@@ -331,6 +331,76 @@ impl NatProfile {
         format!("{};g={generation}", self.control_label())
     }
 
+    /// Add an independently monotonic, *real measurement* sequence to the
+    /// control-plane NAT hint.
+    ///
+    /// `g` describes a change in the usable NAT capability. It deliberately
+    /// does not change for a stable mapping whose STUN RTT merely varies. A
+    /// receiver still needs to learn that a new STUN transaction actually
+    /// succeeded, however: otherwise it must either let good evidence expire
+    /// after one minute or let cached heartbeat metadata keep it fresh forever.
+    /// `o` is that proof-of-new-observation fence. Callers must only provide
+    /// it after a live gather has produced a successful server-reflexive
+    /// observation; cached heartbeat publication reuses the prior label.
+    ///
+    /// The device `nat_type` field is capped at 128 bytes. The normal label is
+    /// much shorter, but maximal `g` and `o` values combined with the longest
+    /// diagnostics fields can exceed the cap. In that exceptional case drop
+    /// optional hairpin then confidence diagnostics while retaining every
+    /// traversal-affecting field (`m`, `a`, `d`, `f`) and both ordering fences.
+    /// Never truncate a field: malformed labels must stay malformed rather
+    /// than silently changing traversal behavior.
+    pub fn control_label_with_generation_and_observation(
+        &self,
+        generation: u64,
+        observation: Option<u64>,
+    ) -> String {
+        self.control_label_with_evidence(generation, observation, None)
+    }
+
+    /// Build the fully fenced NAT label used by the control plane.
+    ///
+    /// `l` is a server-issued registration lifecycle. It resets `g`/`o`
+    /// ordering after a daemon re-registers, while preventing endpoint PATCHes
+    /// from an earlier process incarnation from overwriting the new one.
+    pub fn control_label_with_evidence(
+        &self,
+        generation: u64,
+        observation: Option<u64>,
+        lifecycle: Option<u64>,
+    ) -> String {
+        if observation.is_none() && lifecycle.is_none() {
+            return self.control_label_with_generation(generation);
+        }
+
+        const CONTROL_LABEL_MAX_BYTES: usize = 128;
+        let mut suffix = format!(";g={generation}");
+        if let Some(observation) = observation {
+            suffix.push_str(&format!(";o={observation}"));
+        }
+        if let Some(lifecycle) = lifecycle {
+            suffix.push_str(&format!(";l={lifecycle}"));
+        }
+        let mut label = self.control_label();
+        if label.len() + suffix.len() > CONTROL_LABEL_MAX_BYTES {
+            label = remove_control_label_field(&label, "h");
+        }
+        if label.len() + suffix.len() > CONTROL_LABEL_MAX_BYTES {
+            label = remove_control_label_field(&label, "c");
+        }
+        if label.len() + suffix.len() > CONTROL_LABEL_MAX_BYTES {
+            // `f` is an additive refinement. Mapping/allocation/delta remain
+            // sufficient for the conservative legacy-compatible planner.
+            label = remove_control_label_field(&label, "f");
+        }
+
+        debug_assert!(
+            label.len() + suffix.len() <= CONTROL_LABEL_MAX_BYTES,
+            "NAT control label must fit the server cap"
+        );
+        format!("{label}{suffix}")
+    }
+
     fn unknown(local_addr: SocketAddr) -> Self {
         Self {
             local_addr: local_addr.to_string(),
@@ -354,6 +424,25 @@ impl NatProfile {
     }
 }
 
+/// Remove exactly one complete `;key=value` field from a compact control
+/// label. This is deliberately field-aware instead of byte truncation so the
+/// parser either receives a valid conservative label or rejects it entirely.
+fn remove_control_label_field(label: &str, key: &str) -> String {
+    let needle = format!(";{key}=");
+    let Some(start) = label.find(&needle) else {
+        return label.to_string();
+    };
+    let value_start = start + needle.len();
+    let end = label[value_start..]
+        .find(';')
+        .map(|offset| value_start + offset)
+        .unwrap_or(label.len());
+    let mut compact = String::with_capacity(label.len().saturating_sub(end - start));
+    compact.push_str(&label[..start]);
+    compact.push_str(&label[end..]);
+    compact
+}
+
 /// Parsed value of the `a=` (allocation) token in a [`control_label`].
 ///
 /// `allocation` is DERIVED in `NatProfile::control_label` (it is not stored as
@@ -371,7 +460,7 @@ pub enum NatAllocation {
 }
 
 /// Structured view of a peer `nat_type` control label
-/// (`p2:`/`p2v2:m=..;a=..;d=..;c=..;f=..;h=..[;g=..]`).
+/// (`p2:`/`p2v2:m=..;a=..;d=..;c=..;f=..;h=..[;g=..][;o=..][;l=..]`).
 ///
 /// Receiver-side counterpart to [`NatProfile::control_label`]: the daemon
 /// advertises the label through the relay and the peer parses it back into
@@ -395,6 +484,16 @@ pub struct NatFingerprintHint {
     pub hairpin: HairpinBehavior,
     /// Parsed `g=` profile/evidence generation, if advertised.
     pub profile_generation: Option<u64>,
+    /// Parsed `o=` real STUN observation sequence, if advertised.
+    ///
+    /// This is independent of `g=`: a stable NAT capability may receive many
+    /// live observations without invalidating an established Direct session.
+    pub observation_sequence: Option<u64>,
+    /// Parsed `l=` server-issued registration lifecycle, if advertised.
+    ///
+    /// A newer lifecycle permits a producer to restart its local `g`/`o`
+    /// counters; an older lifecycle must never overwrite a newer one.
+    pub registration_lifecycle: Option<u64>,
     /// `true` only when a well-formed `p2:`/`p2v2:` label was recognized.
     pub parsed: bool,
     /// The trimmed, lower-cased input, retained for the legacy fallback.
@@ -481,7 +580,7 @@ pub fn parse_nat_hint(input: &str) -> NatFingerprintHint {
         return unparsed_hint(&raw);
     };
     // A well-formed label is one or more `key=value` fields joined by `;`,
-    // each with a recognized key (m/a/d/c/f/h/g) AND a recognized value
+    // each with a recognized key (m/a/d/c/f/h/g/o/l) AND a recognized value
     // (d/c numeric where applicable).  Being strict here is the conservative
     // direction: any malformed segment (no `=`), unrecognized key, or bad
     // value yields `parsed == false` and the caller falls back to the legacy
@@ -498,6 +597,8 @@ pub fn parse_nat_hint(input: &str) -> NatFingerprintHint {
     let mut filtering = FilteringBehavior::Unknown;
     let mut hairpin = HairpinBehavior::Unknown;
     let mut profile_generation: Option<u64> = None;
+    let mut observation_sequence: Option<u64> = None;
+    let mut registration_lifecycle: Option<u64> = None;
     let mut fields = 0u8;
     for field in payload.split(';') {
         if field.is_empty() {
@@ -564,6 +665,20 @@ pub fn parse_nat_hint(input: &str) -> NatFingerprintHint {
                 };
                 fields += 1;
             }
+            "o" => {
+                observation_sequence = match value.parse::<u64>() {
+                    Ok(observation) => Some(observation),
+                    Err(_) => return unparsed_hint(&raw),
+                };
+                fields += 1;
+            }
+            "l" => {
+                registration_lifecycle = match value.parse::<u64>() {
+                    Ok(lifecycle) => Some(lifecycle),
+                    Err(_) => return unparsed_hint(&raw),
+                };
+                fields += 1;
+            }
             _ => return unparsed_hint(&raw), // unrecognized key → corrupted
         }
     }
@@ -578,6 +693,8 @@ pub fn parse_nat_hint(input: &str) -> NatFingerprintHint {
         filtering,
         hairpin,
         profile_generation,
+        observation_sequence,
+        registration_lifecycle,
         parsed: true,
         raw,
     }
@@ -594,6 +711,8 @@ fn unparsed_hint(raw: &str) -> NatFingerprintHint {
         filtering: FilteringBehavior::Unknown,
         hairpin: HairpinBehavior::Unknown,
         profile_generation: None,
+        observation_sequence: None,
+        registration_lifecycle: None,
         parsed: false,
         raw: raw.to_string(),
     }

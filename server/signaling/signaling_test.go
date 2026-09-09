@@ -263,6 +263,37 @@ func TestHubBackpressureIsBounded(t *testing.T) {
 	}
 }
 
+func TestHubDisconnectStopsFutureWakeupsBeforeSocketClosure(t *testing.T) {
+	hub := NewHubWithLimit(1)
+	client := &Client{
+		nodeID:   "node-a",
+		done:     make(chan struct{}),
+		send:     make(chan []byte, 1),
+		closeReq: make(chan closeRequest, 1),
+	}
+	if _, err := hub.register(client); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	hub.Disconnect(client.nodeID)
+	select {
+	case <-client.done:
+	default:
+		t.Fatal("disconnect did not stop the superseded client")
+	}
+	if hub.Notify(client.nodeID) {
+		t.Fatal("disconnected client accepted a later wakeup")
+	}
+	select {
+	case request := <-client.closeReq:
+		if request.code != websocket.ClosePolicyViolation {
+			t.Fatalf("unexpected close code %d", request.code)
+		}
+	default:
+		t.Fatal("disconnected client was not scheduled for close")
+	}
+}
+
 func TestHubCloseWaitsForConnectionTasksAndRejectsRegistration(t *testing.T) {
 	fixture := newWebSocketFixture(t)
 	conn := fixture.dial(t, "")

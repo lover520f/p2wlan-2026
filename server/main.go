@@ -88,37 +88,7 @@ func main() {
 	mux.HandleFunc("GET /api/v1/profile", authService.RequireAuth(apiServer.Profile))
 	mux.HandleFunc("PATCH /api/v1/profile", authService.RequireAuth(apiServer.Profile))
 
-	// Dual-auth routes (accept user JWT or device credential)
-	anyAuth := auth.RequireAnyAuth(authService, db)
-	mux.HandleFunc("POST /api/v1/devices", anyAuth(apiServer.RegisterDevice))
-	mux.HandleFunc("GET /api/v1/nodes", anyAuth(apiServer.ListNodes))
-	mux.HandleFunc("POST /api/v1/signals", anyAuth(apiServer.CreateSignal))
-	mux.HandleFunc("GET /api/v1/signals", anyAuth(apiServer.ListSignals))
-	mux.HandleFunc("POST /api/v1/signals/ack", anyAuth(apiServer.AckSignals))
-	mux.HandleFunc("POST /api/v1/tunnels", anyAuth(apiServer.CreateTunnel))
-	mux.HandleFunc("GET /api/v1/tunnels", anyAuth(apiServer.ListTunnels))
-	mux.HandleFunc("DELETE /api/v1/tunnels/{id}", anyAuth(apiServer.DeleteTunnel))
-	mux.HandleFunc("PATCH /api/v1/devices/{id}", anyAuth(apiServer.UpdateDevice))
-	mux.HandleFunc("DELETE /api/v1/devices/{id}", anyAuth(apiServer.DeleteDevice))
-	mux.HandleFunc("POST /api/v1/devices/{id}/offline", anyAuth(apiServer.ReleaseDevicePresence))
-
-	// Device-only routes (device credential required)
-	deviceAuth := auth.RequireDeviceAuth(db)
-	mux.HandleFunc("DELETE /api/v1/devices/credential", deviceAuth(apiServer.RevokeCurrentDeviceCredential))
-
-	// Relay ticket endpoint (device-credential-only, rate limited)
-	mux.HandleFunc("POST /api/v1/relay/tickets", deviceAuth(rateLimit(apiServer.CreateRelayTicket, 5, time.Minute)))
-	mux.HandleFunc("GET /api/v1/relay/revocations", apiServer.RelayRevocations)
-
-	// Backward-compat: endpoint update accepts user JWT (anyAuth)
-	mux.HandleFunc("PATCH /api/v1/devices/{id}/endpoint", anyAuth(apiServer.UpdateDeviceEndpoint))
-
-	// Device-authenticated WebSocket wake-up channel. Signal payloads remain
-	// durable in the database and are consumed through GET /api/v1/signals.
-	signalWS := deviceAuth(signaling.ServeWS(hub))
-	mux.HandleFunc("GET /api/v1/signals/ws", signalWS)
-	// Secure compatibility alias for pre-v1 endpoint discovery.
-	mux.HandleFunc("GET /ws", signalWS)
+	registerDeviceControlRoutes(mux, authService, db, apiServer, hub)
 
 	// HTTP server
 	addr := fmt.Sprintf(":%s", port)
@@ -161,6 +131,54 @@ func main() {
 	log.Println("Server stopped")
 }
 
+// registerDeviceControlRoutes installs every daemon/device-token control
+// route in one place.  Keeping the sequence fence here makes the production
+// mux and the route-level regression tests share the same wiring.
+func registerDeviceControlRoutes(mux *http.ServeMux, authService *auth.Service, db *database.DB, apiServer *api.Server, hub *signaling.Hub) {
+	// Dual-auth routes (accept user JWT or device credential).  Once a device
+	// has registered with an incarnation, its long-lived credential also needs
+	// the current registration sequence on every control action.  Otherwise an
+	// older daemon that still holds that credential could renew its lease or
+	// consume signals after a newer daemon has taken over.
+	anyAuth := auth.RequireAnyAuth(authService, db)
+	deviceSession := apiServer.RequireCurrentDeviceRegistrationSession
+	anySessionAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return anyAuth(deviceSession(next))
+	}
+	mux.HandleFunc("POST /api/v1/devices", anyAuth(apiServer.RegisterDevice))
+	mux.HandleFunc("GET /api/v1/nodes", anySessionAuth(apiServer.ListNodes))
+	mux.HandleFunc("POST /api/v1/signals", anySessionAuth(apiServer.CreateSignal))
+	mux.HandleFunc("GET /api/v1/signals", anySessionAuth(apiServer.ListSignals))
+	mux.HandleFunc("POST /api/v1/signals/ack", anySessionAuth(apiServer.AckSignals))
+	mux.HandleFunc("POST /api/v1/tunnels", anySessionAuth(apiServer.CreateTunnel))
+	mux.HandleFunc("GET /api/v1/tunnels", anySessionAuth(apiServer.ListTunnels))
+	mux.HandleFunc("DELETE /api/v1/tunnels/{id}", anySessionAuth(apiServer.DeleteTunnel))
+	mux.HandleFunc("PATCH /api/v1/devices/{id}", anySessionAuth(apiServer.UpdateDevice))
+	mux.HandleFunc("DELETE /api/v1/devices/{id}", anySessionAuth(apiServer.DeleteDevice))
+	mux.HandleFunc("POST /api/v1/devices/{id}/offline", anySessionAuth(apiServer.ReleaseDevicePresence))
+
+	// Device-only routes (device credential required).
+	deviceAuth := auth.RequireDeviceAuth(db)
+	deviceSessionAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return deviceAuth(deviceSession(next))
+	}
+	mux.HandleFunc("DELETE /api/v1/devices/credential", deviceSessionAuth(apiServer.RevokeCurrentDeviceCredential))
+
+	// Relay ticket endpoint (device-credential-only, rate limited).
+	mux.HandleFunc("POST /api/v1/relay/tickets", deviceSessionAuth(rateLimit(apiServer.CreateRelayTicket, 5, time.Minute)))
+	mux.HandleFunc("GET /api/v1/relay/revocations", apiServer.RelayRevocations)
+
+	// Backward-compat: endpoint update accepts user JWT (anyAuth).
+	mux.HandleFunc("PATCH /api/v1/devices/{id}/endpoint", anySessionAuth(apiServer.UpdateDeviceEndpoint))
+
+	// Device-authenticated WebSocket wake-up channel. Signal payloads remain
+	// durable in the database and are consumed through GET /api/v1/signals.
+	signalWS := deviceAuth(signaling.ServeWS(hub, apiServer.WebSocketRegistrationSessionGuard()))
+	mux.HandleFunc("GET /api/v1/signals/ws", signalWS)
+	// Secure compatibility alias for pre-v1 endpoint discovery.
+	mux.HandleFunc("GET /ws", signalWS)
+}
+
 // withCORS allows explicitly configured browser origins to call the control
 // API. The browser console was deleted and Flutter Web is out of scope, so
 // there is no default browser origin: only origins listed in
@@ -174,7 +192,7 @@ func withCORS(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, "+auth.RegistrationSequenceHeader)
 			w.Header().Set("Access-Control-Max-Age", "600")
 		}
 		if r.Method == http.MethodOptions {

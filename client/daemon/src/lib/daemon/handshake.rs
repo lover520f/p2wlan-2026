@@ -536,6 +536,144 @@ fn should_mark_connecting_after_session_install(
         )
 }
 
+/// Await an initiator offer only while its reserved pending transaction is
+/// still live.  The control runtime owns the actual HTTP request, but dropping
+/// this receiver wait on cancellation releases the bounded control-event work
+/// slot immediately instead of leaving it occupied until that request times
+/// out.
+async fn await_initiator_offer_or_cancellation<F>(
+    offer: F,
+    cancellation: &mut tokio::sync::watch::Receiver<bool>,
+) -> Option<Result<()>>
+where
+    F: std::future::Future<Output = Result<()>>,
+{
+    // A closed sender is fail-closed too: without the reservation owner we
+    // must not report an old offer as current.
+    if *cancellation.borrow() || cancellation.has_changed().is_err() {
+        return None;
+    }
+
+    tokio::select! {
+        biased;
+        changed = cancellation.changed() => {
+            let _ = changed;
+            None
+        }
+        result = offer => {
+            // If both branches become ready together, prefer cancellation;
+            // this final check also covers a sender being dropped immediately
+            // after the request completed.
+            if *cancellation.borrow() || cancellation.has_changed().is_err() {
+                None
+            } else {
+                Some(result)
+            }
+        }
+    }
+}
+
+/// Spawn bounded idempotent retransmission loop for a pending initiator handshake.
+/// It resends the exact same offer (same initiation_bytes, session_id, probe key, candidates)
+/// at bounded intervals (250ms, 500ms, 750ms, 1500ms -> cumulative 250ms, 750ms, 1.5s, 3s)
+/// until an answer is received, the session is established, or the pending owner is cancelled.
+#[allow(clippy::too_many_arguments)]
+fn spawn_bounded_handshake_retransmission(
+    control: ControlClient,
+    peer_id: String,
+    pending_id: u64,
+    candidates: Vec<String>,
+    candidate_sources: HashMap<String, String>,
+    initiation_bytes: Vec<u8>,
+    punch_at_ms: Option<u64>,
+    session_id: String,
+    probe_ephemeral_public_key: String,
+    pending: Arc<PendingHandshakeStore>,
+    transport: WireGuardTransport,
+    peers: Arc<PeerManager>,
+    timeline: Arc<ConnectionTimeline>,
+    mut cancellation: tokio::sync::watch::Receiver<bool>,
+    initial_network_generation: u64,
+    peer_session_generation: PeerSessionGeneration,
+    is_rekey: bool,
+) {
+    tokio::spawn(async move {
+        const RETRANSMIT_DELAYS_MS: [u64; 4] = [250, 500, 750, 1500];
+        for (retransmit_idx, delay_ms) in RETRANSMIT_DELAYS_MS.iter().enumerate() {
+            let delay = Duration::from_millis(*delay_ms);
+            tokio::select! {
+                changed = cancellation.changed() => {
+                    if changed.is_err() || *cancellation.borrow() {
+                        return;
+                    }
+                }
+                _ = tokio::time::sleep(delay) => {}
+            }
+            if *cancellation.borrow() {
+                return;
+            }
+            let is_current = {
+                let state = pending.lock();
+                state.is_current(&peer_id, pending_id)
+                    && state.peer_session_generation(&peer_id) == Some(peer_session_generation)
+            };
+            if !is_current {
+                return;
+            }
+            if peers.current_network_generation_sync() != initial_network_generation {
+                return;
+            }
+            if !peers.peer_session_is_current_sync(&peer_id, peer_session_generation) {
+                return;
+            }
+            if !is_rekey && transport.has_session(&peer_id).await {
+                return;
+            }
+
+            let attempt_idx = retransmit_idx + 1;
+            let Some(retransmit_result) = await_initiator_offer_or_cancellation(
+                control.send_peer_offer_with_sources_punch_and_session(
+                    &peer_id,
+                    &candidates,
+                    &candidate_sources,
+                    &initiation_bytes,
+                    punch_at_ms,
+                    Some(session_id.clone()),
+                    Some(probe_ephemeral_public_key.clone()),
+                ),
+                &mut cancellation,
+            )
+            .await
+            else {
+                return;
+            };
+
+            timeline.emit(
+                "initiator_offer_retransmitted",
+                None,
+                retransmit_result.as_ref().err().map(|_| "control_plane_error"),
+                Some(format!(
+                    "peer={} pending_id={} attempt={} session_fp={} delivered={} is_rekey={}",
+                    peer_id,
+                    pending_id,
+                    attempt_idx,
+                    handshake_token_fingerprint(Some(&session_id)),
+                    retransmit_result.is_ok(),
+                    is_rekey
+                )),
+            );
+            if retransmit_result.is_ok() {
+                debug!(
+                    peer = %peer_id,
+                    attempt = attempt_idx,
+                    is_rekey,
+                    "retransmitted WireGuard handshake initiation"
+                );
+            }
+        }
+    });
+}
+
 include!("handshake/init.rs");
 include!("handshake/initiate.rs");
 include!("handshake/candidates.rs");

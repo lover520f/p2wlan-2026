@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,6 +120,15 @@ func (k contextKey) String() string { return "auth." + string(k) }
 const (
 	UserClaimsKey   contextKey = "user_claims"
 	DeviceClaimsKey contextKey = "device_claims"
+
+	// RegistrationSequenceHeader is the current daemon registration session
+	// proof.  It is deliberately a request header rather than NAT metadata so
+	// every device-token control-plane operation can be fenced, including
+	// operations that do not publish an endpoint.
+	RegistrationSequenceHeader = "X-P2WLAN-Registration-Seq"
+	// RegistrationLifecycleConflictCode is returned when a device credential is
+	// valid but belongs to an older daemon registration session.
+	RegistrationLifecycleConflictCode = "registration_lifecycle_conflict"
 )
 
 // RequireAuth is middleware that requires a valid JWT token.
@@ -269,4 +280,80 @@ func RequireDeviceAuth(db interface {
 			next(w, r.WithContext(ctx))
 		}
 	}
+}
+
+// RequireCurrentDeviceRegistrationSession fences device-token requests to the
+// currently registered daemon process.  A device credential remains valid
+// across daemon restarts so a dropped registration response cannot strand the
+// daemon, but that alone must not let the old process keep renewing its lease,
+// consume durable signals, or replace the new process's WebSocket.
+//
+// Rows with registration_incarnation = 0 predate the fencing protocol and
+// intentionally retain their header-free compatibility path.  For every
+// incarnation-aware row, the caller must supply exactly one canonical decimal
+// X-P2WLAN-Registration-Seq header whose value is the current server sequence.
+// User-JWT requests pass through unchanged.
+func RequireCurrentDeviceRegistrationSession(db interface {
+	GetDevice(deviceID string) (*database.Device, error)
+}) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			claims, err := GetDeviceClaims(r.Context())
+			if err != nil {
+				// This is a user-JWT request authenticated by RequireAnyAuth, or a
+				// handler wired without device auth.  The session proof applies only
+				// to the durable device credential flow.
+				next(w, r)
+				return
+			}
+
+			device, err := db.GetDevice(claims.DeviceID)
+			if err != nil {
+				writeRegistrationLifecycleConflict(w, nil)
+				return
+			}
+			if device.RegistrationIncarnation <= 0 {
+				next(w, r)
+				return
+			}
+
+			if !hasCurrentRegistrationSequence(r, device.RegistrationSeq) {
+				writeRegistrationLifecycleConflict(w, device)
+				return
+			}
+			next(w, r)
+		}
+	}
+}
+
+func hasCurrentRegistrationSequence(r *http.Request, expected int64) bool {
+	values := r.Header.Values(RegistrationSequenceHeader)
+	if len(values) != 1 {
+		return false
+	}
+	raw := values[0]
+	// Reject whitespace, leading plus signs, leading zeroes, and non-decimal
+	// forms.  This makes the proof deterministic through proxies and prevents
+	// ambiguous duplicate-value handling.
+	if raw == "" || strings.TrimSpace(raw) != raw {
+		return false
+	}
+	sequence, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || sequence <= 0 || strconv.FormatInt(sequence, 10) != raw {
+		return false
+	}
+	return sequence == expected
+}
+
+func writeRegistrationLifecycleConflict(w http.ResponseWriter, device *database.Device) {
+	response := map[string]interface{}{
+		"error":      "device registration session is no longer current",
+		"error_code": RegistrationLifecycleConflictCode,
+	}
+	if device != nil {
+		response["registration_seq"] = device.RegistrationSeq
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(response)
 }

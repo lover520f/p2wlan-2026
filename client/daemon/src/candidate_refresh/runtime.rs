@@ -21,6 +21,18 @@ pub(super) struct UdpCandidateRefreshContext {
     pub(super) boot_epoch_ms: u64,
 }
 
+/// Gateway discovery is allowed to run concurrently with STUN.  Its result is
+/// usable only while the UDP socket and the network generation it started on
+/// are still current; otherwise it can advertise a mapping for an old route.
+fn port_mapping_result_is_current(
+    mapping_start_udp_addr: Option<SocketAddr>,
+    mapping_start_generation: u64,
+    current_udp_addr: Option<SocketAddr>,
+    current_generation: u64,
+) -> bool {
+    current_udp_addr == mapping_start_udp_addr && current_generation == mapping_start_generation
+}
+
 /// The reason that woke the candidate-refresh scheduler.
 ///
 /// These reasons are intentionally kept separate: a volatile publication is
@@ -304,6 +316,8 @@ pub(super) async fn run_udp_candidate_refresh(context: UdpCandidateRefreshContex
         // operations. Run them concurrently without holding the shared
         // candidate lock. A peer signal must be able to reuse the last
         // committed snapshot while either discovery path is in flight.
+        let mapping_start_udp_addr = udp.local_addr().ok();
+        let mapping_start_generation = peers.current_network_generation_sync();
         let mapping_future = async {
             if !upnp_enabled {
                 return (Vec::new(), HashMap::new());
@@ -315,8 +329,12 @@ pub(super) async fn run_udp_candidate_refresh(context: UdpCandidateRefreshContex
             );
             let mut discovered = Vec::new();
             let mut discovered_sources = HashMap::new();
+            let existing_candidates = local_candidates.read().await.clone();
+            let existing_sources = local_candidate_sources.read().await.clone();
             maybe_add_port_mapping_udp_candidate(
-                udp.local_addr().ok(),
+                mapping_start_udp_addr,
+                &existing_candidates,
+                &existing_sources,
                 &mut discovered,
                 &mut discovered_sources,
                 gateway_mapping_runtime.clone(),
@@ -372,7 +390,10 @@ pub(super) async fn run_udp_candidate_refresh(context: UdpCandidateRefreshContex
             candidate_count = candidates.len(),
             "UDP candidate refresh gather completed"
         );
-        peers.update_nat_profile(report.nat_profile.clone()).await;
+        // A periodic gather is the only path that creates new `o=` NAT
+        // evidence. Its returned version must travel with this exact report;
+        // the endpoint heartbeat later reuses the committed label unchanged.
+        let nat_publication = peers.update_nat_profile(report.nat_profile.clone()).await;
         let profile_changed = {
             let mut current_profile = nat_profile.write().await;
             if current_profile.as_ref() == Some(&report.nat_profile) {
@@ -421,12 +442,32 @@ pub(super) async fn run_udp_candidate_refresh(context: UdpCandidateRefreshContex
                 });
         }
 
-        for endpoint in mapped_candidates {
-            if !candidates.contains(&endpoint) {
-                candidates.push(endpoint.clone());
-            }
-            if let Some(source) = mapped_sources.get(&endpoint) {
-                candidate_sources.insert(endpoint, source.clone());
+        let current_udp_addr = udp.local_addr().ok();
+        let current_generation = peers.current_network_generation_sync();
+        let is_stale_mapping = !port_mapping_result_is_current(
+            mapping_start_udp_addr,
+            mapping_start_generation,
+            current_udp_addr,
+            current_generation,
+        );
+
+        if is_stale_mapping {
+            debug!(
+                target: "p2wlan_daemon::candidate_refresh",
+                ?mapping_start_udp_addr,
+                ?current_udp_addr,
+                mapping_start_generation,
+                current_generation,
+                "Discarding gateway port mapping results because UDP socket instance or network generation changed during discovery"
+            );
+        } else {
+            for endpoint in mapped_candidates {
+                if !candidates.contains(&endpoint) {
+                    candidates.push(endpoint.clone());
+                }
+                if let Some(source) = mapped_sources.get(&endpoint) {
+                    candidate_sources.insert(endpoint, source.clone());
+                }
             }
         }
 
@@ -518,12 +559,27 @@ pub(super) async fn run_udp_candidate_refresh(context: UdpCandidateRefreshContex
         let new_candidate_count = candidates.len();
         let real_change = change_reason != "no_change" && change_reason != "order_only";
         if !candidate_refresh_requires_commit(real_change, should_advance_generation) {
-            if profile_changed {
+            if profile_changed || nat_publication.observation_advanced {
                 debug!(
-                    "UDP NAT profile changed without advertised candidate endpoint changes: mapping={:?} public={:?}",
+                    "Publishing refreshed UDP NAT evidence without advertised candidate endpoint changes: mapping={:?} public={:?} observation={:?}",
                     report.nat_profile.mapping_behavior,
-                    report.nat_profile.public_endpoint
+                    report.nat_profile.public_endpoint,
+                    nat_publication.observation,
                 );
+                let endpoint = control_udp_endpoint_from_candidates(&candidates, &candidate_sources)
+                    .or(advertised_endpoint)
+                    .unwrap_or_default();
+                let nat_type = report
+                    .nat_profile
+                    .control_label_with_generation_and_observation(
+                        nat_publication.generation,
+                        nat_publication.observation,
+                    );
+                if let Err(err) = control.update_endpoint(&endpoint, &nat_type).await {
+                    warn!("Failed to publish refreshed UDP NAT profile '{endpoint}': {err}");
+                } else if !endpoint.is_empty() {
+                    published_endpoint = Some(endpoint.clone());
+                }
             }
             debug!(
                 "UDP candidate refresh kept the existing {} candidates: changed_reason={change_reason} old_hash={old_hash} new_hash={new_hash} old_candidate_count={old_candidate_count} new_candidate_count={new_candidate_count}",
@@ -584,11 +640,18 @@ pub(super) async fn run_udp_candidate_refresh(context: UdpCandidateRefreshContex
                 published_endpoint.as_deref(),
                 &endpoint,
                 report.nat_profile.mapping_behavior,
-            );
+            )
+            // A same-capability live STUN result renews remote evidence using
+            // `o=`. Do not wait for endpoint churn: that would let a stable
+            // good mapping expire while cached heartbeats keep replaying o-1.
+            || nat_publication.observation_advanced;
         if should_update_endpoint {
             let nat_type = report
                 .nat_profile
-                .control_label_with_generation(peers.current_local_profile_generation_sync());
+                .control_label_with_generation_and_observation(
+                    nat_publication.generation,
+                    nat_publication.observation,
+                );
             if let Err(err) = control.update_endpoint(&endpoint, &nat_type).await {
                 warn!("Failed to publish refreshed UDP endpoint '{endpoint}': {err}");
             } else if !endpoint.is_empty() {

@@ -10,6 +10,7 @@ async fn run_control_loop(
     relay_selection: Option<Arc<RwLock<RelaySelectionDiagnostics>>>,
     critical_auth_tx: watch::Sender<Option<CriticalControlAuth>>,
     health: Option<Arc<crate::tasks::HealthState>>,
+    advertised_snapshot: Arc<std::sync::Mutex<AdvertisedEndpointSnapshot>>,
 ) {
     let base_url = normalize_http_base_url(&config.control.server_url);
 
@@ -38,7 +39,7 @@ async fn run_control_loop(
         // registration generation while this loop is reconnecting.
         let _ = critical_auth_tx.send(None);
         // ---- Registration with exponential backoff ----
-        let self_node_id = {
+        let (self_node_id, registration_seq) = {
             let mut attempt: u32 = 0;
             loop {
                 let registration = async {
@@ -47,11 +48,12 @@ async fn run_control_loop(
                 }
                 .await;
                 match registration {
-                    Ok((node_id, virtual_ip, cidr, server_relay_servers, relay_catalog)) => {
+                    Ok((node_id, virtual_ip, cidr, server_relay_servers, relay_catalog, registration_seq)) => {
                         let _ = critical_auth_tx.send(Some(CriticalControlAuth {
                             base_url: base_url.clone(),
                             token: token.clone(),
                             self_node_id: node_id.clone(),
+                            registration_seq,
                             signal_signing_identity: signal_signing_identity.clone(),
                         }));
                         if let Some(health) = health.as_ref() {
@@ -67,6 +69,14 @@ async fn run_control_loop(
                             let mut s = state.write().await;
                             s.registered = true;
                             s.virtual_ip = Some(virtual_ip.clone());
+                        }
+                        {
+                            let mut snap = advertised_snapshot.lock().unwrap();
+                            snap.endpoint.clear();
+                            snap.nat_type = "unknown".to_string();
+                            snap.generation = None;
+                            snap.lifecycle = None;
+                            snap.observation = None;
                         }
                         if !server_relay_servers.is_empty() {
                             config.relay.servers = server_relay_servers.clone();
@@ -115,6 +125,7 @@ async fn run_control_loop(
                             base_url: base_url.clone(),
                             token: token.clone(),
                             self_node_id: node_id.clone(),
+                            registration_seq,
                             signal_signing_identity: signal_signing_identity.clone(),
                         }));
 
@@ -167,13 +178,30 @@ async fn run_control_loop(
                             base_url: base_url.clone(),
                             token: token.clone(),
                             self_node_id: node_id.clone(),
+                            registration_seq,
                             signal_signing_identity: signal_signing_identity.clone(),
                         }));
 
-                        break node_id;
+                        break (node_id, registration_seq);
                     }
                     Err(err) => {
                         let err_str = err.to_string();
+                        if is_registration_conflict_error(&err_str) {
+                            // A persistent daemon incarnation is intentionally
+                            // not incremented in-process. Retrying this stale
+                            // request as if it were transient could let an old
+                            // process fence a newer one, so only a fresh daemon
+                            // boot may reserve a new incarnation.
+                            error!(
+                                "Control registration lifecycle conflict — restart required: {err_str}"
+                            );
+                            if let Some(health) = health.as_ref() {
+                                health.set_reauth_required(true);
+                            }
+                            let _ = event_tx.send(ControlEvent::ReauthRequired { message: err_str });
+                            let _ = event_tx.send(ControlEvent::Disconnected);
+                            return;
+                        }
                         if is_permanent_auth_error(&err_str) {
                             if token != user_token && !user_token.trim().is_empty() {
                                 warn!(
@@ -249,6 +277,7 @@ async fn run_control_loop(
                 &token,
                 &config,
                 &self_node_id,
+                registration_seq,
                 &state,
                 event_tx,
             )
@@ -256,7 +285,12 @@ async fn run_control_loop(
         }
         .await;
         if let Err(err) = initial_peer_poll {
-            warn!("Initial peer polling failed: {err}");
+            let err_str = err.to_string();
+            if is_registration_conflict_error(&err_str) {
+                emit_registration_lifecycle_conflict(health.as_ref(), event_tx, err_str).await;
+                return;
+            }
+            warn!("Initial peer polling failed: {err_str}");
             if let Some(health) = health.as_ref() {
                 health.set_control_connected(false);
             }
@@ -274,6 +308,7 @@ async fn run_control_loop(
                 &base_url,
                 &token,
                 &self_node_id,
+                registration_seq,
                 event_tx,
                 0,
                 &recent_signal_ids,
@@ -282,7 +317,12 @@ async fn run_control_loop(
         }
         .await;
         if let Err(err) = initial_signal_poll {
-            warn!("Initial signal polling failed: {err}");
+            let err_str = err.to_string();
+            if is_registration_conflict_error(&err_str) {
+                emit_registration_lifecycle_conflict(health.as_ref(), event_tx, err_str).await;
+                return;
+            }
+            warn!("Initial signal polling failed: {err_str}");
             if let Some(health) = health.as_ref() {
                 health.set_control_connected(false);
             }
@@ -302,6 +342,7 @@ async fn run_control_loop(
                 &token,
                 &self_node_id,
                 &config.network.network_id,
+                registration_seq,
                 signal_wake_tx.clone(),
                 signal_ws_connected.clone(),
             )
@@ -323,12 +364,18 @@ async fn run_control_loop(
         let mut poll_failures: u32 = 0;
         let mut signal_failures: u32 = 0;
         let mut heartbeat_failures: u32 = 0;
-        let mut advertised_endpoint = String::new();
-        let mut advertised_nat_type = "unknown".to_string();
         loop {
             tokio::select! {
                 _ = heartbeat_tick.tick() => {
+                    let (advertised_endpoint, advertised_nat_type) = {
+                        let snap = advertised_snapshot.lock().unwrap();
+                        (snap.endpoint.clone(), snap.nat_type.clone())
+                    };
                     let relay_rtt_ms = current_relay_rtt_ms(relay_selection.as_ref()).await;
+                    let advertised_nat_type = control_label_with_registration_seq(
+                        &advertised_nat_type,
+                        registration_seq,
+                    );
                     let heartbeat_result = async {
                         let current_http = http.current()?;
                         update_endpoint(
@@ -339,6 +386,7 @@ async fn run_control_loop(
                             &advertised_endpoint,
                             &advertised_nat_type,
                             relay_rtt_ms,
+                            registration_seq,
                         )
                         .await
                     }
@@ -360,6 +408,10 @@ async fn run_control_loop(
                         Err(err) => {
                             heartbeat_failures = heartbeat_failures.saturating_add(1);
                             let err_str = err.to_string();
+                            if is_registration_conflict_error(&err_str) {
+                                emit_registration_lifecycle_conflict(health.as_ref(), event_tx, err_str).await;
+                                return;
+                            }
                             warn!(
                                 "Device lease refresh failed (attempt {heartbeat_failures}): {err_str}"
                             );
@@ -388,12 +440,26 @@ async fn run_control_loop(
                 _ = peer_roster_tick.tick() => {
                     let poll_result = async {
                         let current_http = http.current()?;
-                        poll_peers(&current_http, &base_url, &token, &config, &self_node_id, &state, event_tx).await
+                        poll_peers(
+                            &current_http,
+                            &base_url,
+                            &token,
+                            &config,
+                            &self_node_id,
+                            registration_seq,
+                            &state,
+                            event_tx,
+                        )
+                        .await
                     }
                     .await;
                     match &poll_result {
                         Err(e) => {
                             let err_str = e.to_string();
+                            if is_registration_conflict_error(&err_str) {
+                                emit_registration_lifecycle_conflict(health.as_ref(), event_tx, err_str).await;
+                                return;
+                            }
                             if is_permanent_auth_error(&err_str) {
                                 error!("Permanent auth failure during polling: {err_str}");
                                 if let Some(health) = health.as_ref() {
@@ -454,7 +520,17 @@ async fn run_control_loop(
                 Some(()) = signal_wake_rx.recv() => {
                     let signal_result = async {
                         let current_http = http.current()?;
-                        poll_signals(&current_http, &base_url, &token, &self_node_id, event_tx, 0, &recent_signal_ids).await
+                        poll_signals(
+                            &current_http,
+                            &base_url,
+                            &token,
+                            &self_node_id,
+                            registration_seq,
+                            event_tx,
+                            0,
+                            &recent_signal_ids,
+                        )
+                        .await
                     }
                     .await;
                     match signal_result {
@@ -467,6 +543,10 @@ async fn run_control_loop(
                         }
                         Err(e) => {
                             let err_str = e.to_string();
+                            if is_registration_conflict_error(&err_str) {
+                                emit_registration_lifecycle_conflict(health.as_ref(), event_tx, err_str).await;
+                                return;
+                            }
                             if is_permanent_auth_error(&err_str) {
                                 error!("Permanent auth failure after WebSocket signal wake: {err_str}");
                                 if let Some(health) = health.as_ref() {
@@ -496,7 +576,17 @@ async fn run_control_loop(
                     let wait_ms = signal_poll_wait_ms(ws_connected);
                     let signal_result = async {
                         let current_http = http.current()?;
-                        poll_signals(&current_http, &base_url, &token, &self_node_id, event_tx, wait_ms, &recent_signal_ids).await
+                        poll_signals(
+                            &current_http,
+                            &base_url,
+                            &token,
+                            &self_node_id,
+                            registration_seq,
+                            event_tx,
+                            wait_ms,
+                            &recent_signal_ids,
+                        )
+                        .await
                     }
                     .await;
                     match signal_result {
@@ -509,6 +599,10 @@ async fn run_control_loop(
                         }
                         Err(e) => {
                             let err_str = e.to_string();
+                            if is_registration_conflict_error(&err_str) {
+                                emit_registration_lifecycle_conflict(health.as_ref(), event_tx, err_str).await;
+                                return;
+                            }
                             if is_permanent_auth_error(&err_str) {
                                 error!("Permanent auth failure during signal polling: {err_str}");
                                 if let Some(health) = health.as_ref() {

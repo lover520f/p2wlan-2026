@@ -576,6 +576,7 @@ impl Daemon {
                     node_private_key: self.config.node.private_key.clone(),
                     kick_rx: handshake_kick_rx,
                     handshake_retry_kick_tx: self.handshake_retry_kick_tx.clone(),
+                    timeline: self.timeline.clone(),
                 }),
             )
             .await;

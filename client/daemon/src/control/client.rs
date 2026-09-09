@@ -7,7 +7,7 @@ impl ControlClient {
             return Err(DaemonError::Config("room registration requires an authenticated managed profile".into()));
         }
         let http = control_http_client(config.control.proxy_mode)?;
-        let (node_id, virtual_ip, cidr, relays, _) = register_device(
+        let (node_id, virtual_ip, cidr, relays, _, _) = register_device(
             &http,
             &normalize_http_base_url(&config.control.server_url),
             &config.control.auth_token,
@@ -98,10 +98,11 @@ impl ControlClient {
                 completed: shutdown_done_rx,
             })
         });
+        let critical_lifecycle_tx = cmd_tx.clone();
         let client = Self {
             shutdown_lifecycle,
             event_tx: event_tx.clone(),
-            cmd_tx,
+            cmd_tx: cmd_tx.clone(),
             critical_offer_tx,
             critical_answer_tx,
             critical_ctrl_tx,
@@ -143,6 +144,10 @@ impl ControlClient {
                 health: health.clone(),
                 state: state.clone(),
             };
+            let advertised_snapshot = Arc::new(std::sync::Mutex::new(
+                AdvertisedEndpointSnapshot::default(),
+            ));
+            let critical_advertised_snapshot = advertised_snapshot.clone();
             let critical = async move {
                 run_critical_control_loop(
                     critical_http,
@@ -156,6 +161,8 @@ impl ControlClient {
                     critical_relay_selection,
                     critical_health,
                     shutdown_rx,
+                    critical_advertised_snapshot,
+                    critical_lifecycle_tx,
                 )
                 .await;
             };
@@ -171,6 +178,7 @@ impl ControlClient {
                     relay_selection,
                     critical_auth_tx,
                     health,
+                    advertised_snapshot,
                 )
                 .await;
             };
@@ -198,16 +206,39 @@ impl ControlClient {
     pub(crate) fn disabled_for_test() -> Self {
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
-        let (critical_offer_tx, critical_offer_rx) = mpsc::channel(CRITICAL_OFFER_QUEUE_CAPACITY);
-        let (critical_answer_tx, critical_answer_rx) =
-            mpsc::channel(CRITICAL_ANSWER_QUEUE_CAPACITY);
-        let (critical_ctrl_tx, critical_ctrl_rx) = mpsc::channel(CRITICAL_CTRL_QUEUE_CAPACITY);
-        let (candidate_offer_tx, candidate_offer_rx) =
-            mpsc::channel(CANDIDATE_OFFER_QUEUE_CAPACITY);
-        drop(critical_offer_rx);
-        drop(critical_answer_rx);
-        drop(critical_ctrl_rx);
-        drop(candidate_offer_rx);
+        let (critical_offer_tx, mut critical_offer_rx) =
+            mpsc::channel::<CriticalOfferCommand>(CRITICAL_OFFER_QUEUE_CAPACITY);
+        let (critical_answer_tx, mut critical_answer_rx) =
+            mpsc::channel::<CriticalAnswerCommand>(CRITICAL_ANSWER_QUEUE_CAPACITY);
+        let (critical_ctrl_tx, mut critical_ctrl_rx) =
+            mpsc::channel::<CriticalControlCommand>(CRITICAL_CTRL_QUEUE_CAPACITY);
+        let (candidate_offer_tx, mut candidate_offer_rx) =
+            mpsc::channel::<CandidateOfferCommand>(CANDIDATE_OFFER_QUEUE_CAPACITY);
+        tokio::spawn(async move {
+            while let Some(cmd) = critical_offer_rx.recv().await {
+                let _ = cmd.response_tx.send(PeerOfferSendOutcome::Sent);
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(cmd) = critical_answer_rx.recv().await {
+                let _ = cmd.response_tx.send(Ok(()));
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(cmd) = candidate_offer_rx.recv().await {
+                let _ = cmd.response_tx.send(PeerOfferSendOutcome::Sent);
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(cmd) = critical_ctrl_rx.recv().await {
+                match cmd {
+                    CriticalControlCommand::UpdateEndpoint { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    CriticalControlCommand::Shutdown => break,
+                }
+            }
+        });
         let state = Arc::new(RwLock::new(ClientState {
             room_authorization: Arc::new(crate::rooms::RoomAuthorization::new("default")),
             registered: false,
@@ -303,6 +334,11 @@ impl ControlClient {
     /// Get a snapshot of the known peers.
     pub async fn peers(&self) -> HashMap<String, PeerInfo> {
         self.state.read().await.peers.clone()
+    }
+
+    #[cfg(test)]
+    pub async fn set_peer_for_test(&self, peer: PeerInfo) {
+        self.state.write().await.peers.insert(peer.node_id.clone(), peer);
     }
 
     /// Get the assigned virtual IP.
