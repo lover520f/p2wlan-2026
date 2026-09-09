@@ -1,3 +1,4 @@
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn poll_peers(
     http: &reqwest::Client,
     base_url: &str,
@@ -159,6 +160,7 @@ pub(super) fn peer_metadata_changed(known: &PeerInfo, peer: &PeerInfo) -> bool {
         || known.relay_rtt_ms != peer.relay_rtt_ms
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn create_tunnel(
     http: &reqwest::Client,
     base_url: &str,

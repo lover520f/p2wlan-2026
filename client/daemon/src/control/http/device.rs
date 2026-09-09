@@ -269,6 +269,7 @@ pub(super) fn control_label_with_registration_seq(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn update_endpoint(
     http: &reqwest::Client,
     base_url: &str,

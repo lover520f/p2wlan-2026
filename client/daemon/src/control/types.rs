@@ -927,7 +927,7 @@ pub fn extract_nat_generation(input: &str) -> Option<u64> {
     if let Some(hint) = p2pnet_nat::parse_nat_hint(input).profile_generation {
         return Some(hint);
     }
-    for part in input.split(|c: char| c == ';' || c == ' ' || c == '(' || c == ')') {
+    for part in input.split([';', ' ', '(', ')']) {
         if let Some(val) = part.strip_prefix("g=") {
             if let Ok(gen) = val.parse::<u64>() {
                 return Some(gen);
@@ -952,7 +952,7 @@ pub fn extract_nat_lifecycle(input: &str) -> Option<u64> {
 }
 
 fn extract_nat_label_u64(input: &str, key: &str) -> Option<u64> {
-    for part in input.split(|c: char| c == ';' || c == ' ' || c == '(' || c == ')') {
+    for part in input.split([';', ' ', '(', ')']) {
         if let Some(value) = part.strip_prefix(&format!("{key}=")) {
             if let Ok(value) = value.parse::<u64>() {
                 return Some(value);

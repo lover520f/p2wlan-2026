@@ -177,6 +177,7 @@ pub(super) async fn send_prepared_signal(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn poll_signals(
     http: &reqwest::Client,
     base_url: &str,
@@ -569,6 +570,7 @@ struct LeasedSignalDelivery {
 /// time: if an ACK is ambiguous, later rows stay unacknowledged and the
 /// server's per-pair head-of-line lease will replay from the first uncertain
 /// commit instead of allowing a newer handshake to overtake it.
+#[allow(clippy::too_many_arguments)]
 fn spawn_signal_application_lane(
     http: reqwest::Client,
     base_url: String,

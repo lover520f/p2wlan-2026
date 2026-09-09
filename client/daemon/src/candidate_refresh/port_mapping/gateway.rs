@@ -100,7 +100,7 @@ pub(super) fn resolve_physical_lan_ipv4_for_port_with_addresses(
                 let candidate = SocketAddr::new(IpAddr::V4(v4), port);
                 if is_port_mapping_local_addr(candidate) {
                     let score = subnet_prefix_score(v4, gw);
-                    if score > 0 && best_match.as_ref().map_or(true, |(_, s)| score > *s) {
+                    if score > 0 && best_match.as_ref().is_none_or(|(_, s)| score > *s) {
                         best_match = Some((v4, score));
                     }
                 }

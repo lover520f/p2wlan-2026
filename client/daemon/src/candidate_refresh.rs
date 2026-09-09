@@ -368,8 +368,12 @@ mod tests {
         sources.insert(host_cand.clone(), "host".to_string());
 
         // 1. When host candidate is in the list, resolves host candidate
-        let resolved =
-            port_mapping_local_addr(Some(wildcard), &[host_cand.clone()], &sources, None);
+        let resolved = port_mapping_local_addr(
+            Some(wildcard),
+            std::slice::from_ref(&host_cand),
+            &sources,
+            None,
+        );
         assert_eq!(resolved, Some("192.168.1.100:61302".parse().unwrap()));
 
         // 1b. Stale host candidate port from previous socket is rebound to current socket port
