@@ -15,11 +15,11 @@ class _ApplicationSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _PreferenceRow(
+          showDivider: false,
           label: strings.closeBehavior,
           subtitle: strings.closeBehaviorHelper,
           trailing: AppSelect<String>(
-            expanded: MediaQuery.sizeOf(context).width < 340,
-            width: MediaQuery.sizeOf(context).width < 340 ? 220 : 248,
+            width: 248,
             key: const ValueKey('settings-close-behavior-select'),
             menuTitle: strings.closeBehavior,
             value: state._closeBehavior,

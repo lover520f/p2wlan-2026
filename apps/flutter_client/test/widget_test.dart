@@ -37,10 +37,10 @@ void main() {
 
     // Diagnostics lives in the collapsed Developer section (progressive
     // disclosure), so it is revealed before asserting on the URL field.
-    expect(find.text('开发与诊断'), findsOneWidget);
-    await tester.ensureVisible(find.text('开发与诊断'));
+    expect(find.text('诊断与关于'), findsOneWidget);
+    await tester.ensureVisible(find.text('诊断与关于'));
     await tester.pump();
-    await tester.tap(find.text('开发与诊断'));
+    await tester.tap(find.text('诊断与关于'));
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('诊断 URL'), findsWidgets);
@@ -59,12 +59,7 @@ void main() {
     await tester.tap(find.text('设置').last);
     await tester.pump(const Duration(milliseconds: 250));
     // Language lives inside the General category detail.
-    await tester.tap(
-      find.descendant(
-        of: find.byKey(const Key('settings-category-rail')),
-        matching: find.text('常规'),
-      ),
-    );
+    await tester.tap(find.text('通用').last);
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('简体中文').last);
     await tester.pumpAndSettle();
@@ -91,10 +86,10 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
     }
     final developer = categoryRail.evaluate().isEmpty
-        ? find.text('Developer & Diagnostics')
+        ? find.text('Diagnostics & About')
         : find.descendant(
             of: categoryRail,
-            matching: find.text('Developer & Diagnostics'),
+            matching: find.text('Diagnostics & About'),
           );
     expect(developer, findsOneWidget);
     await tester.ensureVisible(developer);
@@ -302,7 +297,7 @@ void main() {
     await _pumpTestApp(tester);
     await tester.tap(find.text('设置'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('常规'));
+    await tester.tap(find.text('通用'));
     await tester.pumpAndSettle();
 
     expect(find.byType(SettingsPage), findsOneWidget);
@@ -313,7 +308,7 @@ void main() {
 
     expect(find.byType(SettingsPage), findsOneWidget);
     expect(find.byIcon(Icons.arrow_back_rounded), findsNothing);
-    expect(find.text('常规'), findsOneWidget);
+    expect(find.text('通用'), findsOneWidget);
 
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();

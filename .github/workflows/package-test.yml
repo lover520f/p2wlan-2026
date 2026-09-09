@@ -87,7 +87,7 @@ jobs:
           daemon="target/aarch64-apple-darwin/release/p2wlan-daemon"
           work="$RUNNER_TEMP/p2wlan-macos-arm64"
           app="$work/P2WLAN.app"
-          dmg="$RUNNER_TEMP/p2wlan-flutter-macos-arm64.dmg"
+          dmg="$RUNNER_TEMP/p2wlan-macos-arm64.dmg"
 
           test -d "$src"
           test -x "$daemon"

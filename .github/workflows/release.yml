@@ -131,19 +131,19 @@ jobs:
           set -euo pipefail
           mkdir -p dist-release
           cp apps/flutter_client/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
-            dist-release/p2wlan-flutter-android-arm64-release.apk
+            dist-release/p2wlan-android-arm64-release.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p2wlan-flutter-android-arm64-release
-          path: dist-release/p2wlan-flutter-android-arm64-release.apk
+          name: p2wlan-android-arm64-release
+          path: dist-release/p2wlan-android-arm64-release.apk
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          files: dist-release/p2wlan-flutter-android-arm64-release.apk
+          files: dist-release/p2wlan-android-arm64-release.apk
 
   flutter-ios:
     needs: identity-gate
@@ -186,19 +186,19 @@ jobs:
           rm -rf "$payload"
           mkdir -p "$payload/Payload" dist-release
           ditto "$app" "$payload/Payload/P2WLAN.app"
-          (cd "$payload" && zip -qry "$GITHUB_WORKSPACE/dist-release/p2wlan-flutter-ios-arm64-unsigned.ipa" Payload)
+          (cd "$payload" && zip -qry "$GITHUB_WORKSPACE/dist-release/p2wlan-ios-arm64-unsigned.ipa" Payload)
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p2wlan-flutter-ios-arm64-unsigned
-          path: dist-release/p2wlan-flutter-ios-arm64-unsigned.ipa
+          name: p2wlan-ios-arm64-unsigned
+          path: dist-release/p2wlan-ios-arm64-unsigned.ipa
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          files: dist-release/p2wlan-flutter-ios-arm64-unsigned.ipa
+          files: dist-release/p2wlan-ios-arm64-unsigned.ipa
 
   flutter-macos:
     needs: identity-gate
@@ -267,7 +267,7 @@ jobs:
         run: |
           set -euo pipefail
           src="apps/flutter_client/build/macos/Build/Products/Release/P2WLAN.app"
-          work="$RUNNER_TEMP/p2wlan-flutter-macos-${{ matrix.arch }}"
+          work="$RUNNER_TEMP/p2wlan-macos-${{ matrix.arch }}"
           app="$work/P2WLAN.app"
           mkdir -p dist-release
           rm -rf "$work"
@@ -295,19 +295,19 @@ jobs:
             -srcfolder "$work" \
             -ov \
             -format UDZO \
-            "dist-release/p2wlan-flutter-macos-${{ matrix.arch }}.dmg"
+            "dist-release/p2wlan-macos-${{ matrix.arch }}.dmg"
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p2wlan-flutter-macos-${{ matrix.arch }}
-          path: dist-release/p2wlan-flutter-macos-${{ matrix.arch }}.dmg
+          name: p2wlan-macos-${{ matrix.arch }}
+          path: dist-release/p2wlan-macos-${{ matrix.arch }}.dmg
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          files: dist-release/p2wlan-flutter-macos-${{ matrix.arch }}.dmg
+          files: dist-release/p2wlan-macos-${{ matrix.arch }}.dmg
 
   flutter-linux:
     needs: identity-gate
@@ -397,19 +397,19 @@ jobs:
             --release \
             --daemon "$bundle_dir/p2wlan-daemon" \
             --expected-commit "$GITHUB_SHA"
-          tar -C "$bundle_dir" -czf "dist-release/p2wlan-flutter-linux-${{ matrix.arch }}.tar.gz" .
+          tar -C "$bundle_dir" -czf "dist-release/p2wlan-linux-${{ matrix.arch }}.tar.gz" .
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p2wlan-flutter-linux-${{ matrix.arch }}
-          path: dist-release/p2wlan-flutter-linux-${{ matrix.arch }}.tar.gz
+          name: p2wlan-linux-${{ matrix.arch }}
+          path: dist-release/p2wlan-linux-${{ matrix.arch }}.tar.gz
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          files: dist-release/p2wlan-flutter-linux-${{ matrix.arch }}.tar.gz
+          files: dist-release/p2wlan-linux-${{ matrix.arch }}.tar.gz
 
   flutter-windows:
     needs: identity-gate
@@ -520,7 +520,7 @@ jobs:
           }
           python3 scripts/release/verify_release_identity.py --release --daemon (Join-Path $sourceDir "p2wlan-daemon.exe") --expected-commit $env:GITHUB_SHA
           $outputDir = (Resolve-Path "dist-release").Path
-          $iss = Join-Path $env:RUNNER_TEMP "p2wlan-flutter-windows.iss"
+          $iss = Join-Path $env:RUNNER_TEMP "p2wlan-windows.iss"
           @"
           #define SourceDir "$sourceDir"
           #define OutputDir "$outputDir"
@@ -536,7 +536,7 @@ jobs:
           DefaultGroupName=P2WLAN
           DisableProgramGroupPage=yes
           OutputDir={#OutputDir}
-          OutputBaseFilename=p2wlan-flutter-windows-{#AppArch}-setup
+          OutputBaseFilename=p2wlan-windows-{#AppArch}-setup
           Compression=lzma2
           SolidCompression=yes
           WizardStyle=modern
@@ -561,14 +561,14 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p2wlan-flutter-windows-${{ matrix.arch }}-setup
-          path: dist-release/p2wlan-flutter-windows-${{ matrix.arch }}-setup.exe
+          name: p2wlan-windows-${{ matrix.arch }}-setup
+          path: dist-release/p2wlan-windows-${{ matrix.arch }}-setup.exe
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          files: dist-release/p2wlan-flutter-windows-${{ matrix.arch }}-setup.exe
+          files: dist-release/p2wlan-windows-${{ matrix.arch }}-setup.exe
 
   linux-cli:
     needs: identity-gate

@@ -45,8 +45,6 @@ class _PreferenceRow extends StatelessWidget {
             children: [
               Text(
                 label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
@@ -57,8 +55,6 @@ class _PreferenceRow extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   subtitle!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 12,
                     height: 1.3,
@@ -112,29 +108,46 @@ class _PreferenceRow extends StatelessWidget {
           borderRadius: BorderRadius.circular(AppTokens.radiusMd),
         ),
         child: Container(
-          constraints: const BoxConstraints(minHeight: 48),
+          constraints: const BoxConstraints(minHeight: 60),
           padding: const EdgeInsets.symmetric(
             horizontal: AppTokens.space8,
-            vertical: AppTokens.space6,
+            vertical: AppTokens.space12,
           ),
           child: LayoutBuilder(
-            builder: (context, _) {
-              // Settings rows are intentionally single-line on every phone
-              // width. The previous narrow-screen branch moved values below
-              // their labels even when the row had enough room, which made
-              // the root list and preference controls look vertically loose.
-              // Flexible children now ellipsize instead of changing row
-              // height, preserving a consistent scan line.
+            builder: (context, constraints) {
+              final stack =
+                  trailing != null &&
+                  (constraints.maxWidth < 500 ||
+                      MediaQuery.textScalerOf(context).scale(14) > 18);
+              if (stack) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    labelContent,
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: trailingContent,
+                    ),
+                  ],
+                );
+              }
               return Row(
                 children: [
                   Expanded(child: labelContent),
                   const SizedBox(width: AppTokens.space12),
-                  Flexible(
-                    child: Align(
-                      alignment: Alignment.centerRight,
+                  if (hasTrailing)
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 248),
                       child: trailingContent,
+                    )
+                  else
+                    Flexible(
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: trailingContent,
+                      ),
                     ),
-                  ),
                 ],
               );
             },
@@ -163,16 +176,10 @@ class _SettingsSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final colors = P2WlanColors.of(context);
     final radius = BorderRadius.circular(AppTokens.radiusLg);
     return Container(
-      decoration: BoxDecoration(
-        borderRadius: radius,
-        boxShadow: theme.brightness == Brightness.dark
-            ? const []
-            : AppTokens.shadowBorder,
-      ),
+      decoration: BoxDecoration(borderRadius: radius),
       child: Material(
         color: colors.surface,
         shape: RoundedRectangleBorder(
@@ -244,32 +251,94 @@ class _DetailHeader extends StatelessWidget {
   }
 }
 
-/// Lightweight subsection label inside a category detail (virtual network /
-/// UDP / relay…). Muted and small — never a big heading or card.
-class _SubsectionLabel extends StatelessWidget {
-  const _SubsectionLabel(this.title);
-
+/// A lightweight heading and one bordered group, with consistent spacing.
+class _SettingsGroup extends StatelessWidget {
+  const _SettingsGroup({
+    required this.title,
+    required this.children,
+    this.subtitle,
+  });
   final String title;
-
+  final String? subtitle;
+  final List<Widget> children;
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.only(
-        top: AppTokens.space6,
-        bottom: AppTokens.space6,
-      ),
-      child: Text(
-        title,
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.4,
-          color: theme.colorScheme.primary,
-        ),
+      padding: const EdgeInsets.only(bottom: 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            title,
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (subtitle != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              subtitle!,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          _SettingsSurface(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: children,
+            ),
+          ),
+        ],
       ),
     );
   }
+}
+
+/// Technical values remain selectable and readable, with a direct copy action.
+class _SettingsValue extends StatelessWidget {
+  const _SettingsValue({required this.label, required this.value});
+  final String label;
+  final String value;
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 10),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 4),
+              SelectableText(
+                value,
+                key: PageStorageKey('settings-value-$label-$value'),
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          tooltip: AppStringsScope.of(context).copy,
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: value));
+            if (context.mounted) {
+              showAppNotice(
+                context,
+                content: Text(AppStringsScope.of(context).copied),
+              );
+            }
+          },
+          icon: const Icon(Icons.copy_outlined, size: 18),
+        ),
+      ],
+    ),
+  );
 }
 
 /// A regular TextField used inside settings details. Bounded width on desktop
@@ -302,7 +371,7 @@ class _SettingsField extends StatelessWidget {
     return Align(
       alignment: Alignment.centerLeft,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 520),
+        constraints: const BoxConstraints(maxWidth: 640),
         child: TextField(
           controller: controller,
           keyboardType: keyboardType,
@@ -318,7 +387,9 @@ class _SettingsField extends StatelessWidget {
             labelText: label,
             hintText: hintText,
             helperText: helper,
+            helperMaxLines: 3,
             errorText: errorText,
+            errorMaxLines: 3,
           ),
         ),
       ),
@@ -333,11 +404,13 @@ class _SaveBar extends StatelessWidget {
   const _SaveBar({
     required this.busy,
     required this.onSave,
+    required this.onUndo,
     this.restartRequired = false,
   });
 
   final bool busy;
   final VoidCallback onSave;
+  final VoidCallback onUndo;
   final bool restartRequired;
 
   @override
@@ -371,7 +444,7 @@ class _SaveBar extends StatelessWidget {
               if (restartRequired) ...[
                 const SizedBox(height: 2),
                 Text(
-                  strings.restartWillApplyLater,
+                  strings.settingsReconnectImpact,
                   style: TextStyle(
                     fontSize: 12,
                     color: theme.colorScheme.onSurfaceVariant,
@@ -389,19 +462,29 @@ class _SaveBar extends StatelessWidget {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.save_outlined, size: 16),
-            label: Text(
-              restartRequired
-                  ? strings.saveChangesRestartRequired
-                  : strings.saveChanges,
-            ),
+            label: Text(strings.saveChanges),
           );
-          if (constraints.maxWidth < 480) {
+          final actions = Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              TextButton(
+                key: const Key('settings-undo-button'),
+                onPressed: busy ? null : onUndo,
+                child: Text(strings.settingsUndo),
+              ),
+              save,
+            ],
+          );
+          if (constraints.maxWidth < 620 ||
+              MediaQuery.textScalerOf(context).scale(14) > 18) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 label,
                 const SizedBox(height: AppTokens.space10),
-                save,
+                actions,
               ],
             );
           }
@@ -409,7 +492,7 @@ class _SaveBar extends StatelessWidget {
             children: [
               Expanded(child: label),
               const SizedBox(width: AppTokens.space14),
-              save,
+              actions,
             ],
           );
         },

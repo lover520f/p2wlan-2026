@@ -393,8 +393,7 @@ class _VirtualIpBlock extends StatelessWidget {
   Future<void> _copy(BuildContext context, AppStrings strings) async {
     await Clipboard.setData(ClipboardData(text: virtualIp));
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(strings.copied)));
+    showAppNotice(context, content: Text(strings.copied));
   }
 }
 

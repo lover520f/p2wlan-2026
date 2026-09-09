@@ -1,4 +1,6 @@
+import 'package:p2wlan_flutter_client/shared/widgets/app_notice.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'username_settings.dart';
 
@@ -119,6 +121,8 @@ class _SettingsPageState extends State<SettingsPage> {
   var _closeBehavior = defaultCloseBehavior;
   var _showTokenField = false;
   var _uploadingLogs = false;
+  String? _immediateSaved;
+  String? _immediateError;
   String? _logUploadError;
 
   /// Rebuilds a full-screen mobile category route when draft-only state
@@ -140,6 +144,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void _updateState(VoidCallback fn) {
     if (!mounted) return;
     setState(fn);
+    _notifyDirty();
     _detailViewNotifier.value += 1;
   }
 
@@ -347,17 +352,15 @@ class _SettingsPageState extends State<SettingsPage> {
     return switch (category) {
       SettingsCategory.general =>
         _deviceNameController.text.trim().isEmpty
-            ? strings.credentialNotSaved
+            ? strings.deviceName
             : _deviceNameController.text.trim(),
       SettingsCategory.accountNetwork => _describeCredential(strings),
-      SettingsCategory.application =>
-        _closeBehavior == 'keep-running'
-            ? strings.closeBehaviorKeepRunning
-            : strings.closeBehaviorStopAndQuit,
       SettingsCategory.advancedNetwork =>
         _manualMode ? strings.manualMode : 'MTU ${_mtuController.text.trim()}',
       SettingsCategory.developer =>
-        widget.statusStore.daemonReachable
+        !_capabilities.canControlLocalDaemon
+            ? widget.statusStore.daemonController.clientBuildInfo.appVersion
+            : widget.statusStore.daemonReachable
             ? strings.daemonRunning
             : strings.daemonStopped,
     };

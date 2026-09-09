@@ -1,3 +1,4 @@
+import 'package:p2wlan_flutter_client/shared/widgets/app_notice.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
@@ -326,9 +327,7 @@ class _NodesPageState extends State<NodesPage> {
 
   void _showSnack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+    showAppNotice(context, content: Text(message));
   }
 
   bool _acceptsAccount(AppSettings settings) =>

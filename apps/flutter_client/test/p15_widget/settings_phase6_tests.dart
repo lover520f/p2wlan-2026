@@ -49,7 +49,7 @@ void _registerSettingsPhase6Tests() {
 
     // The root is a findable category list, never a stack of input fields.
     expect(find.text('General'), findsOneWidget);
-    expect(find.text('Account & Network'), findsOneWidget);
+    expect(find.text('Account & Connection'), findsOneWidget);
     for (final technical in [
       'MTU',
       'UDP bind',
@@ -75,13 +75,13 @@ void _registerSettingsPhase6Tests() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('mobile: open and return from Account & Network detail', (
+  testWidgets('mobile: open and return from Account & Connection detail', (
     tester,
   ) async {
     final stores = await storesWith(tester, _FakeDiagnosticsApi(health: false));
     await pump(tester, stores, size: const Size(390, 844));
 
-    await tester.tap(find.text('Account & Network'));
+    await tester.tap(find.text('Account & Connection'));
     await tester.pumpAndSettle();
 
     expect(find.text('Control server'), findsOneWidget);
@@ -124,37 +124,36 @@ void _registerSettingsPhase6Tests() {
 
     // Rail exists with General selected by default (rail item + detail title).
     expect(find.text('General'), findsWidgets);
-    expect(find.text('Account & Network'), findsOneWidget);
+    expect(find.text('Account & Connection'), findsOneWidget);
     expect(find.text('Advanced Network'), findsOneWidget);
-    expect(find.text('Developer & Diagnostics'), findsOneWidget);
+    expect(find.text('Diagnostics & About'), findsOneWidget);
     // General detail is inline (device name field visible), no dialog.
     expect(find.text('Device name'), findsOneWidget);
     expect(find.byType(Dialog), findsNothing);
 
     // Switch categories inline.
-    await tester.tap(find.text('Account & Network'));
+    await tester.tap(find.text('Account & Connection'));
     await tester.pumpAndSettle();
     expect(find.text('Control server'), findsOneWidget);
     await tester.tap(find.text('Advanced Network'));
     await tester.pumpAndSettle();
     expect(find.text('Interface name'), findsOneWidget);
-    await tester.tap(find.text('Developer & Diagnostics'));
+    await tester.tap(find.text('Diagnostics & About'));
     await tester.pumpAndSettle();
     expect(find.text('Diagnostics URL'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('desktop 700 and 900: category rail stays visible', (
+  testWidgets('desktop 700 and 900: narrow content uses category list', (
     tester,
   ) async {
     for (final size in const [Size(700, 1000), Size(900, 1000)]) {
       final stores = await _pumpSettingsShell(tester, size);
       addTearDown(stores.dispose);
 
-      // The global shell may be compact at 700 and full at 900, but desktop
-      // Settings keeps its own category rail at both widths.
-      expect(find.byKey(const Key('settings-category-rail')), findsOneWidget);
-      expect(find.text('Device name'), findsOneWidget);
+      // Secondary navigation yields room to the form in a narrow content pane.
+      expect(find.byKey(const Key('settings-category-rail')), findsNothing);
+      expect(find.text('Device name'), findsNothing);
       await tester.tap(find.text('Advanced Network'));
       await tester.pumpAndSettle();
       expect(find.text('Interface name'), findsOneWidget);
@@ -349,7 +348,7 @@ void _registerSettingsPhase6Tests() {
     expect(stores.statusStore.daemonReachable, isTrue);
     final storedUrl = stores.settingsStore.settings.diagnosticsUrl;
 
-    await tester.tap(find.text('Developer & Diagnostics'));
+    await tester.tap(find.text('Diagnostics & About'));
     await tester.pumpAndSettle();
     await tester.enterText(
       _settingsTextField('Diagnostics URL'),
@@ -372,7 +371,7 @@ void _registerSettingsPhase6Tests() {
     final stores = await storesWith(tester, _FakeDiagnosticsApi(health: false));
     await pump(tester, stores, size: const Size(800, 1200));
 
-    await tester.tap(find.text('Account & Network'));
+    await tester.tap(find.text('Account & Connection'));
     await tester.pumpAndSettle();
     await tester.enterText(
       _settingsTextField('Control server'),
@@ -409,9 +408,9 @@ void _registerSettingsPhase6Tests() {
     await pump(tester, stores, size: const Size(800, 1200), capabilities: caps);
 
     expect(find.text('General'), findsOneWidget);
-    expect(find.text('Account & Network'), findsOneWidget);
+    expect(find.text('Account & Connection'), findsOneWidget);
     expect(find.text('Advanced Network'), findsNothing);
-    expect(find.text('Developer & Diagnostics'), findsNothing);
+    expect(find.text('Diagnostics & About'), findsOneWidget);
     expect(find.text('App'), findsNothing);
     for (final technical in [
       'Interface name',
@@ -460,7 +459,7 @@ void _registerSettingsPhase6Tests() {
       onLogout: () => signedOut = true,
     );
 
-    await tester.tap(find.text('Account & Network'));
+    await tester.tap(find.text('Account & Connection'));
     await tester.pumpAndSettle();
     // Sign out is present and tappable.
     expect(find.text('Sign out'), findsOneWidget);
@@ -657,7 +656,7 @@ void _registerSettingsPhase6Tests() {
 
       await pump(tester, stores, size: const Size(800, 2400));
 
-      await _openCategory(tester, 'Account & Network');
+      await _openCategory(tester, 'Account & Connection');
       expect(find.text('Securely saved'), findsOneWidget);
 
       await _openCategory(tester, 'Advanced Network');
@@ -669,8 +668,8 @@ void _registerSettingsPhase6Tests() {
       await _tapSave(tester);
       await _waitFor(tester, () => stores.settingsStore.settings.manualMode);
 
-      // Switch to Account & Network to check the credential status.
-      await _openCategory(tester, 'Account & Network');
+      // Switch to Account & Connection to check the credential status.
+      await _openCategory(tester, 'Account & Connection');
 
       expect(find.text('Manual mode, no credential needed'), findsOneWidget);
       expect(find.text('Securely saved'), findsNothing);

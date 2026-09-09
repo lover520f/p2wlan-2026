@@ -355,8 +355,6 @@ class DesktopTrayController with TrayListener, WindowListener {
     final daemonReachable =
         statusStore.daemonReachable || statusStore.parallelRooms.hasSessions;
     final busy = statusStore.daemonBusy || statusStore.parallelRooms.busy;
-    final statusLabel = _statusLabel(strings);
-    final networkLabel = _networkLabel(strings, snapshot);
     final primaryControlLabel = busy
         ? strings.daemonWorking
         : daemonReachable
@@ -365,9 +363,6 @@ class DesktopTrayController with TrayListener, WindowListener {
 
     return Menu(
       items: [
-        MenuItem(label: '${strings.trayStatus}: $statusLabel', disabled: true),
-        MenuItem(label: networkLabel, disabled: true),
-        MenuItem.separator(),
         MenuItem(
           label: strings.openConsole,
           onClick: (_) => unawaited(_showWindow()),
@@ -466,7 +461,7 @@ class DesktopTrayController with TrayListener, WindowListener {
   String desktopVisibleTitleForTesting() {
     // Keep the stable app title for the Dock/window. The macOS menu-bar item
     // intentionally uses trayMenuBarTitleForTesting() and stays icon-only;
-    // connection metrics remain available in the tray menu.
+    // connection metrics remain available in the console.
     return Platform.isMacOS ? p2wlanAppName : trayTitleForTesting();
   }
 
@@ -503,13 +498,6 @@ class DesktopTrayController with TrayListener, WindowListener {
         ? '—'
         : formatTransferRate(speed).replaceAll(' ', '');
     return '$latencyLabel/$speedLabel';
-  }
-
-  String _networkLabel(AppStrings strings, DiagnosticsSnapshot? snapshot) {
-    final virtualIp = snapshot?.virtualIp.trim();
-    final peerCount = snapshot?.stats.totalPeers ?? 0;
-    final metricsSnapshot = _metricsSnapshot;
-    return '${strings.virtualIp}: ${virtualIp == null || virtualIp.isEmpty ? '—' : virtualIp} · ${strings.peerCount}: $peerCount · ${strings.localAverageRtt}: ${formatLatency(_averageLatency(metricsSnapshot))} · ${strings.transferSpeed}: ${formatTransferRate(_aggregateSpeed(metricsSnapshot))}';
   }
 
   DiagnosticsSnapshot? get _metricsSnapshot {

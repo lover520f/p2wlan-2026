@@ -170,7 +170,9 @@ class _RecentLogsPanelState extends State<_RecentLogsPanel> {
               ),
               const SizedBox(height: AppTokens.space8),
               Text(
-                strings.isZh ? '时间按系统本地时区显示，并保留时区偏移；原始日志未被改写。' : 'Times use the system local time zone with explicit offsets; original logs are unchanged.',
+                strings.isZh
+                    ? '时间按系统本地时区显示，并保留时区偏移；原始日志未被改写。'
+                    : 'Times use the system local time zone with explicit offsets; original logs are unchanged.',
                 style: TextStyle(
                   fontSize: 11,
                   color: themeTextSecondary(context),
@@ -235,26 +237,24 @@ class _RecentLogsPanelState extends State<_RecentLogsPanel> {
       await (widget.openLogs ?? _openLogsDefault)();
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '${strings.cannotOpenLogsTitle}\n${strings.cannotOpenLogsDetail}',
-          ),
+      showAppNotice(
+        context,
+
+        content: Text(
+          '${strings.cannotOpenLogsTitle}\n${strings.cannotOpenLogsDetail}',
         ),
       );
       return;
     }
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(strings.logsOpened)));
+    showAppNotice(context, content: Text(strings.logsOpened));
   }
 
   Future<void> _copyLogs(String content) async {
     final strings = AppStringsScope.of(context);
     await Clipboard.setData(ClipboardData(text: content));
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(strings.logExcerptCopied)));
+    showAppNotice(context, content: Text(strings.logExcerptCopied));
   }
 }
 

@@ -81,13 +81,13 @@ P2WLAN 的目标不是替你定义业务，而是提供一张跨地域的虚拟�
 
 | 平台 | Release 文件 | 状态 |
 | --- | --- | --- |
-| macOS 12+ Apple Silicon | `p2wlan-flutter-macos-arm64.dmg` | 支持 |
-| macOS 12+ Intel | `p2wlan-flutter-macos-x64.dmg` | 支持 |
-| Windows x64 | `p2wlan-flutter-windows-x64-setup.exe` | 支持 |
+| macOS 12+ Apple Silicon | `p2wlan-macos-arm64.dmg` | 支持 |
+| macOS 12+ Intel | `p2wlan-macos-x64.dmg` | 支持 |
+| Windows x64 | `p2wlan-windows-x64-setup.exe` | 支持 |
 | Linux x64 | Flutter `.tar.gz` / CLI `.tar.gz` | 支持 |
 | Linux arm64 | CLI `.tar.gz` | 支持 |
-| Android 7.0+ (API 24+) arm64 | `p2wlan-flutter-android-arm64-release.apk` | Preview |
-| iOS 15+ arm64 | `p2wlan-flutter-ios-arm64-unsigned.ipa` | 实验性，需签名 |
+| Android 7.0+ (API 24+) arm64 | `p2wlan-android-arm64-release.apk` | Preview |
+| iOS 15+ arm64 | `p2wlan-ios-arm64-unsigned.ipa` | 实验性，需签名 |
 
 ### 2. 登录
 

@@ -16,7 +16,7 @@ from report_common import make_report
 REQUIRED_ASSET_PATTERNS = {
     "android_arm64": re.compile(r"android-arm64.*\.apk$"),
     "ios_arm64": re.compile(r"ios-arm64.*\.ipa$"),
-    "linux_flutter_x64": re.compile(r"flutter-linux-x64.*\.tar\.gz$"),
+    "linux_flutter_x64": re.compile(r"p2wlan-(?:flutter-)?linux-x64(?:-release)?\.tar\.gz$"),
     "macos_arm64": re.compile(r"macos-arm64.*\.dmg$"),
     "macos_x64": re.compile(r"macos-x64.*\.dmg$"),
     "windows_x64": re.compile(r"windows-x64.*\.(?:exe|zip)$"),

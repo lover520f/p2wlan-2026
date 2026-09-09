@@ -9,7 +9,11 @@ extension _SettingsPageActions on _SettingsPageState {
     final settings = widget.settingsStore.settings;
     switch (category) {
       case SettingsCategory.general:
-        return _deviceNameController.text.trim() != settings.deviceName.trim();
+        return _deviceNameController.text.trim() !=
+                settings.deviceName.trim() ||
+            (_capabilities.canUseSystemTray &&
+                normalizeCloseBehavior(_closeBehavior) !=
+                    normalizeCloseBehavior(settings.closeBehavior));
       case SettingsCategory.accountNetwork:
         // A non-empty token draft counts; an empty token field means "keep the
         // stored credential" and is not a change.
@@ -18,9 +22,6 @@ extension _SettingsPageActions on _SettingsPageState {
                 settings.controlServer.trim() ||
             _networkIdController.text.trim() != settings.networkId.trim() ||
             _virtualIpController.text.trim() != settings.virtualIp.trim();
-      case SettingsCategory.application:
-        return normalizeCloseBehavior(_closeBehavior) !=
-            normalizeCloseBehavior(settings.closeBehavior);
       case SettingsCategory.advancedNetwork:
         final mtuText = _mtuController.text.trim();
         return _manualMode != settings.manualMode ||
@@ -96,13 +97,12 @@ extension _SettingsPageActions on _SettingsPageState {
       switch (category) {
         case SettingsCategory.general:
           deviceName = _deviceNameController.text;
+          if (_capabilities.canUseSystemTray) closeBehavior = _closeBehavior;
         case SettingsCategory.accountNetwork:
           controlServer = _controlServerController.text;
           authToken = _authTokenController.text;
           networkId = _networkIdController.text;
           virtualIp = _virtualIpController.text;
-        case SettingsCategory.application:
-          closeBehavior = _closeBehavior;
         case SettingsCategory.advancedNetwork:
           // Empty delegates credential preservation/clearing to SettingsStore:
           // managed mode preserves, manual mode clears.
@@ -167,6 +167,7 @@ extension _SettingsPageActions on _SettingsPageState {
           }
         });
       }
+      if (mounted) _resetCategory(category, afterSave: true);
       _showSnackBar(
         _restartRequired
             ? strings.settingsSavedRestartRequired
@@ -232,6 +233,7 @@ extension _SettingsPageActions on _SettingsPageState {
         before.deviceName != after.deviceName ||
         before.manualMode != after.manualMode ||
         before.tunInterface != after.tunInterface ||
+        before.overlayCidr != after.overlayCidr ||
         before.mtu != after.mtu ||
         before.udpBind != after.udpBind ||
         before.udpAdvertise != after.udpAdvertise ||
@@ -315,31 +317,92 @@ extension _SettingsPageActions on _SettingsPageState {
   }
 
   Future<void> _saveLanguage(String languageCode) async {
-    _updateState(() => _saving = true);
-    try {
-      await widget.settingsStore.updateLanguageCode(languageCode);
-      _showSnackBar(AppStrings.fromCode(languageCode).languageSaved);
-    } finally {
-      if (mounted) _updateState(() => _saving = false);
-    }
+    await _saveImmediate(
+      'language',
+      () => widget.settingsStore.updateLanguageCode(languageCode),
+    );
   }
 
   Future<void> _saveThemeMode(String themeMode) async {
-    final strings = AppStrings.fromCode(
-      widget.settingsStore.settings.languageCode,
+    await _saveImmediate(
+      'theme',
+      () => widget.settingsStore.updateThemeMode(themeMode),
     );
-    _updateState(() => _saving = true);
+  }
+
+  Future<void> _saveImmediate(
+    String preference,
+    Future<void> Function() save,
+  ) async {
+    if (_saving) return;
+    _updateState(() {
+      _saving = true;
+      _immediateSaved = null;
+      _immediateError = null;
+    });
     try {
-      await widget.settingsStore.updateThemeMode(themeMode);
-      _showSnackBar(strings.themeSaved);
+      await save();
+      _updateState(() => _immediateSaved = preference);
+    } catch (_) {
+      _updateState(
+        () => _immediateError = AppStrings.fromCode(
+          widget.settingsStore.settings.languageCode,
+        ).failedToSaveLocalSettings,
+      );
     } finally {
-      if (mounted) _updateState(() => _saving = false);
+      _updateState(() => _saving = false);
     }
+  }
+
+  bool _draftNeedsRestart(SettingsCategory category) {
+    if (!widget.statusStore.daemonReachable || !_categoryDirty(category)) {
+      return false;
+    }
+    if (category == SettingsCategory.general) {
+      return _deviceNameController.text.trim() !=
+          widget.settingsStore.settings.deviceName.trim();
+    }
+    return category == SettingsCategory.accountNetwork ||
+        category == SettingsCategory.advancedNetwork;
+  }
+
+  /// Discard only this category. Immediate preferences and other drafts survive.
+  void _resetCategory(SettingsCategory category, {bool afterSave = false}) {
+    if (_saving && !afterSave) return;
+    final saved = widget.settingsStore.settings;
+    switch (category) {
+      case SettingsCategory.general:
+        _deviceNameController.text = saved.deviceName;
+        _closeBehavior = saved.closeBehavior;
+      case SettingsCategory.accountNetwork:
+        _authTokenController.clear();
+        _controlServerController.text = saved.controlServer;
+        _networkIdController.text = saved.networkId;
+        _virtualIpController.text = saved.virtualIp;
+      case SettingsCategory.advancedNetwork:
+        _manualMode = saved.manualMode;
+        _socketPool = saved.socketPool;
+        _tunInterfaceController.text = saved.effectiveTunInterface;
+        _mtuController.text = saved.mtu.toString();
+        _overlayCidrController.text = saved.overlayCidr;
+        _udpBindController.text = saved.udpBind;
+        _udpAdvertiseController.text = saved.udpAdvertise;
+        _relayServersController.text = saved.relayServers;
+      case SettingsCategory.developer:
+        _diagnosticsUrlController.text = saved.diagnosticsUrl;
+        _diagnosticsError = null;
+    }
+    _updateState(() {
+      if (_formErrorCategory == category) {
+        _formError = null;
+        _formErrorCategory = null;
+      }
+    });
+    _notifyDirty();
   }
 
   void _showSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    showAppNotice(context, content: Text(message));
   }
 }

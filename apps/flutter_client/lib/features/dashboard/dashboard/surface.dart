@@ -149,7 +149,6 @@ class _ManualCommandCardState extends State<_ManualCommandCard> {
   Future<void> _copy(BuildContext context, AppStrings strings) async {
     await Clipboard.setData(ClipboardData(text: widget.command));
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(strings.copiedLaunchCommand)));
+    showAppNotice(context, content: Text(strings.copiedLaunchCommand));
   }
 }

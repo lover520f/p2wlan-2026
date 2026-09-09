@@ -20,61 +20,72 @@ class _AccountSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (state.widget.settingsStore.settings.authToken.trim().isNotEmpty)
-          UsernameSettings(
-            key: ValueKey((
-              state.widget.settingsStore.settings.controlServer,
-              state.widget.settingsStore.settings.authToken,
-            )),
-            server: state.widget.settingsStore.settings.controlServer,
-            token: state.widget.settingsStore.settings.authToken,
-          ),
-        _PreferenceRow(
-          label: strings.credentialSectionTitle,
-          subtitle: credentialState,
-          value: state._showTokenField
-              ? strings.hideCredential
-              : strings.changeCredential,
-          onTap: saving
-              ? null
-              : () => state._updateState(
-                  () => state._showTokenField = !state._showTokenField,
-                ),
+        _SettingsGroup(
+          title: strings.settingsAccountGroup,
+          children: [
+            if (state.widget.settingsStore.settings.authToken.trim().isNotEmpty)
+              UsernameSettings(
+                key: ValueKey((
+                  state.widget.settingsStore.settings.controlServer,
+                  state.widget.settingsStore.settings.authToken,
+                )),
+                server: state.widget.settingsStore.settings.controlServer,
+                token: state.widget.settingsStore.settings.authToken,
+              ),
+            _PreferenceRow(
+              label: strings.credentialSectionTitle,
+              subtitle: credentialState,
+              value: state._showTokenField
+                  ? strings.hideCredential
+                  : strings.changeCredential,
+              onTap: saving
+                  ? null
+                  : () => state._updateState(
+                      () => state._showTokenField = !state._showTokenField,
+                    ),
+            ),
+            if (state._showTokenField) ...[
+              const SizedBox(height: AppTokens.space4),
+              _SettingsField(
+                controller: state._authTokenController,
+                label: strings.authToken,
+                helper: strings.credentialChangeHelper,
+                obscureText: true,
+                textInputAction: TextInputAction.next,
+              ),
+              const SizedBox(height: 16),
+            ],
+          ],
         ),
-        if (state._showTokenField) ...[
-          const SizedBox(height: AppTokens.space4),
-          _SettingsField(
-            controller: state._authTokenController,
-            label: strings.authToken,
-            helper: strings.credentialChangeHelper,
-            obscureText: true,
-            textInputAction: TextInputAction.next,
-          ),
-          const SizedBox(height: AppTokens.space6),
-        ],
-        _SettingsField(
-          controller: state._controlServerController,
-          label: strings.controlServer,
-          helper: strings.controlServerHelper,
-          keyboardType: TextInputType.url,
-          textInputAction: TextInputAction.next,
-        ),
-        const SizedBox(height: AppTokens.space6),
-        _SettingsField(
-          controller: state._networkIdController,
-          label: strings.networkId,
-          helper: strings.networkIdHelper,
-          textInputAction: TextInputAction.next,
-        ),
-        const SizedBox(height: AppTokens.space6),
-        _SettingsField(
-          controller: state._virtualIpController,
-          label: strings.requestedVirtualIp,
-          helper: strings.requestedVirtualIpHelperSettings,
-          textInputAction: TextInputAction.done,
-          onSubmitted: saving
-              ? null
-              : (_) => state._saveCategory(SettingsCategory.accountNetwork),
+        _SettingsGroup(
+          title: strings.settingsConnectionGroup,
+          subtitle: strings.settingsConnectionHint,
+          children: [
+            _SettingsField(
+              controller: state._controlServerController,
+              label: strings.controlServer,
+              helper: strings.controlServerHelper,
+              keyboardType: TextInputType.url,
+              textInputAction: TextInputAction.next,
+            ),
+            const SizedBox(height: 16),
+            _SettingsField(
+              controller: state._networkIdController,
+              label: strings.networkId,
+              helper: strings.networkIdHelper,
+              textInputAction: TextInputAction.next,
+            ),
+            const SizedBox(height: 16),
+            _SettingsField(
+              controller: state._virtualIpController,
+              label: strings.requestedVirtualIp,
+              helper: strings.requestedVirtualIpHelperSettings,
+              textInputAction: TextInputAction.done,
+              onSubmitted: saving
+                  ? null
+                  : (_) => state._saveCategory(SettingsCategory.accountNetwork),
+            ),
+          ],
         ),
         if (state.widget.onLogout != null) ...[
           const SizedBox(height: AppTokens.space16),

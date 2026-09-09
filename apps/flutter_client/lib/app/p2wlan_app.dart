@@ -1,3 +1,4 @@
+import 'package:p2wlan_flutter_client/shared/widgets/app_notice.dart';
 import 'dart:async';
 import 'dart:io' show Platform;
 
@@ -55,7 +56,6 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
   DesktopTrayController? _desktopTrayController;
   DesktopWindowStatusController? _desktopWindowStatusController;
   final _navigatorKey = GlobalKey<NavigatorState>();
-  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
   StreamSubscription<Uri>? _roomLinkSubscription;
   Uri? _pendingRoomLink;
   bool _openingRoomLink = false;
@@ -208,8 +208,10 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
             .copyWith(authToken: '', manualMode: false),
       );
     } on AccountSessionChangeException catch (error) {
-      _messengerKey.currentState?.showSnackBar(
-        SnackBar(content: Text(error.message)),
+      if (!mounted) return;
+      showAppNotice(
+        _navigatorKey.currentState!.overlay!.context,
+        content: Text(error.message),
       );
       return;
     }
@@ -252,7 +254,6 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
         _scheduleRoomLink();
         return MaterialApp(
           navigatorKey: _navigatorKey,
-          scaffoldMessengerKey: _messengerKey,
           title: p2wlanAppName,
           debugShowCheckedModeBanner: false,
           theme: AppTheme.lightTheme,

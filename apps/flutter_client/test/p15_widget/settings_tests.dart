@@ -76,6 +76,11 @@ Future<void> _waitFor(WidgetTester tester, bool Function() condition) async {
 /// set synchronously, before the async disk write finishes).
 Future<void> _waitForSaveComplete(WidgetTester tester, Key key) async {
   for (var attempt = 0; attempt < 30; attempt += 1) {
+    final widget = tester.widget(find.byKey(key));
+    if (widget is SegmentedButton<String> &&
+        widget.onSelectionChanged != null) {
+      return;
+    }
     final trigger = find.descendant(
       of: find.byKey(key),
       matching: find.byType(OutlinedButton),
@@ -93,6 +98,9 @@ Future<void> _waitForSaveComplete(WidgetTester tester, Key key) async {
 }
 
 Future<void> _openAppSelect(WidgetTester tester, Key key) async {
+  await tester.ensureVisible(find.byKey(key));
+  await tester.pumpAndSettle();
+  if (tester.widget(find.byKey(key)) is SegmentedButton<String>) return;
   await tester.tap(
     find.descendant(of: find.byKey(key), matching: find.byType(OutlinedButton)),
   );
@@ -104,7 +112,7 @@ void _registerSettingsTests() {
   ) async {
     await _pumpSettings(tester, api: _FakeDiagnosticsApi(health: false));
 
-    await _openCategory(tester, 'Developer & Diagnostics');
+    await _openCategory(tester, 'Diagnostics & About');
     await tester.enterText(
       _settingsTextField('Diagnostics URL'),
       'ftp://127.0.0.1:39277',
@@ -184,9 +192,9 @@ void _registerSettingsTests() {
     );
     await tester.pumpAndSettle();
 
-    // Status is reported in the Account & Network detail; the credential
+    // Status is reported in the Account & Connection detail; the credential
     // itself is never rendered.
-    await _openCategory(tester, 'Account & Network');
+    await _openCategory(tester, 'Account & Connection');
     expect(find.text('Securely saved'), findsOneWidget);
     expect(find.textContaining('secret-token'), findsNothing);
     // The token input is hidden until explicitly requested.
@@ -207,14 +215,15 @@ void _registerSettingsTests() {
       () => stores.settingsStore.settings.authToken == 'replacement-token',
     );
 
+    await _waitFor(
+      tester,
+      () => find.byKey(const Key('settings-save-button')).evaluate().isEmpty,
+    );
     expect(stores.settingsStore.settings.authToken, 'replacement-token');
     // The new credential is reported as saved without the token itself ever
     // appearing outside the editable field (which keeps what the user typed).
     expect(find.text('Securely saved'), findsOneWidget);
-    expect(
-      tester.widget<TextField>(tokenField).controller!.text,
-      'replacement-token',
-    );
+    expect(tester.widget<TextField>(tokenField).controller!.text, isEmpty);
   });
 
   testWidgets('Empty token save preserves the stored credential', (
@@ -243,7 +252,7 @@ void _registerSettingsTests() {
     );
     await tester.pumpAndSettle();
 
-    await _openCategory(tester, 'Account & Network');
+    await _openCategory(tester, 'Account & Connection');
     await tester.tap(find.text('Change credential'));
     await tester.pump();
     // The revealed token field is empty; save with nothing else changed would
@@ -271,7 +280,7 @@ void _registerSettingsTests() {
       onLogout: () => signedOut = true,
     );
 
-    await _openCategory(tester, 'Account & Network');
+    await _openCategory(tester, 'Account & Connection');
     expect(find.text('Sign out'), findsOneWidget);
     await tester.tap(find.text('Sign out'));
     expect(signedOut, isTrue);
@@ -280,7 +289,7 @@ void _registerSettingsTests() {
   testWidgets('Settings omits Sign out without a handler', (tester) async {
     await _pumpSettings(tester, api: _FakeDiagnosticsApi(health: false));
 
-    await _openCategory(tester, 'Account & Network');
+    await _openCategory(tester, 'Account & Connection');
     expect(find.text('Sign out'), findsNothing);
   });
 
@@ -296,14 +305,14 @@ void _registerSettingsTests() {
 
     // Root shows only remote-relevant categories and no technical fields.
     expect(find.text('Advanced Network'), findsNothing);
-    expect(find.text('Developer & Diagnostics'), findsNothing);
+    expect(find.text('Diagnostics & About'), findsOneWidget);
     expect(find.text('Interface name'), findsNothing);
     expect(find.text('Diagnostics URL'), findsNothing);
     expect(find.text('Close window behavior'), findsNothing);
     expect(find.text('Control server'), findsNothing);
 
     // Account-level fields remain reachable inside the category detail.
-    await _openCategory(tester, 'Account & Network');
+    await _openCategory(tester, 'Account & Connection');
     expect(find.text('Control server'), findsOneWidget);
     expect(find.text('Network ID'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -344,7 +353,7 @@ void _registerSettingsTests() {
     );
     await tester.pumpAndSettle();
 
-    await _openCategory(tester, 'Account & Network');
+    await _openCategory(tester, 'Account & Connection');
     await tester.enterText(
       _settingsTextField('Control server'),
       'https://ctrl.example',
@@ -380,7 +389,7 @@ void _registerSettingsTests() {
     await stores.statusStore.refresh();
     expect(stores.statusStore.daemonReachable, isTrue);
 
-    await _openCategory(tester, 'Account & Network');
+    await _openCategory(tester, 'Account & Connection');
     await tester.enterText(
       _settingsTextField('Control server'),
       'https://ctrl.example',
@@ -467,7 +476,7 @@ void _registerSettingsTests() {
         );
         await tester.pumpAndSettle();
         await _openCategory(tester, 'Advanced Network');
-        await _openCategory(tester, 'Developer & Diagnostics');
+        await _openCategory(tester, 'Diagnostics & About');
         expect(tester.takeException(), isNull);
         stores.dispose();
       }
@@ -500,9 +509,9 @@ void _registerSettingsTests() {
     );
     await tester.pumpAndSettle();
 
-    // The Account & Network detail carries the credential state on the
+    // The Account & Connection detail carries the credential state on the
     // compact desktop settings layout.
-    await _openCategory(tester, 'Account & Network');
+    await _openCategory(tester, 'Account & Connection');
     expect(find.text('Securely saved'), findsOneWidget);
 
     await tester.runAsync(
@@ -550,7 +559,7 @@ void _registerSettingsTests() {
 
     // Second save with no daemon-launch change (close behavior only). The
     // pending restart must NOT be cleared by this unrelated save.
-    await _openCategory(tester, 'App');
+    await _openCategory(tester, 'General');
     await _openAppSelect(
       tester,
       const ValueKey('settings-close-behavior-select'),

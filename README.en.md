@@ -81,13 +81,13 @@ Get the latest build from [GitHub Releases](https://github.com/yhan-sun/p2wlan/r
 
 | Platform | Release artifact | Status |
 | --- | --- | --- |
-| macOS 12+ Apple Silicon | `p2wlan-flutter-macos-arm64.dmg` | Supported |
-| macOS 12+ Intel | `p2wlan-flutter-macos-x64.dmg` | Supported |
-| Windows x64 | `p2wlan-flutter-windows-x64-setup.exe` | Supported |
+| macOS 12+ Apple Silicon | `p2wlan-macos-arm64.dmg` | Supported |
+| macOS 12+ Intel | `p2wlan-macos-x64.dmg` | Supported |
+| Windows x64 | `p2wlan-windows-x64-setup.exe` | Supported |
 | Linux x64 | Flutter `.tar.gz` / CLI `.tar.gz` | Supported |
 | Linux arm64 | CLI `.tar.gz` | Supported |
-| Android 7.0+ (API 24+) arm64 | `p2wlan-flutter-android-arm64-release.apk` | Preview |
-| iOS 15+ arm64 | `p2wlan-flutter-ios-arm64-unsigned.ipa` | Experimental, requires signing |
+| Android 7.0+ (API 24+) arm64 | `p2wlan-android-arm64-release.apk` | Preview |
+| iOS 15+ arm64 | `p2wlan-ios-arm64-unsigned.ipa` | Experimental, requires signing |
 
 ### 2. Sign in
 

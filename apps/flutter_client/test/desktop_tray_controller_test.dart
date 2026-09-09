@@ -162,8 +162,10 @@ void main() {
 
     expect(labels, contains('停止 P2WLAN'));
     expect(labels, isNot(contains('启动 P2WLAN')));
-    expect(labels.any((label) => label.contains('本端平均 RTT: 34 ms')), isTrue);
-    expect(labels.any((label) => label.contains('传输速度: —')), isTrue);
+    expect(labels.first, '打开控制台');
+    expect(labels.any((label) => label.startsWith('状态:')), isFalse);
+    expect(labels.any((label) => label.contains('本端平均 RTT:')), isFalse);
+    expect(labels.any((label) => label.contains('传输速度:')), isFalse);
   });
 
   test('desktop tray online-device submenu excludes offline peers', () async {

@@ -492,14 +492,14 @@ class AppStrings {
       isZh ? '本地 P2WLAN 客户端配置。' : 'Local P2WLAN client configuration.';
   String get connectionSettings => isZh ? '连接设置' : 'Connection settings';
   String get language => isZh ? '语言' : 'Language';
-  String get languageHelper =>
-      isZh ? '仅影响此 Flutter 客户端界面。' : 'Changes only this Flutter client UI.';
+  String get languageHelper => isZh ? '选择后立即生效。' : 'Applies immediately.';
   String get english => 'English';
   String get simplifiedChinese => '简体中文';
   String get languageSaved => isZh ? '语言设置已保存' : 'Language saved';
   String get themeMode => isZh ? '主题模式' : 'Theme Mode';
-  String get themeModeHelper =>
-      isZh ? '支持跟随系统、浅色模式和暗色模式。' : 'Supports system, light, and dark mode.';
+  String get themeModeHelper => isZh
+      ? '选择此设备上的显示风格，立即生效。'
+      : 'Choose the appearance on this device. Applies immediately.';
   String get themeSystem => isZh ? '跟随系统' : 'System';
   String get themeLight => isZh ? '浅色模式' : 'Light';
   String get themeDark => isZh ? '暗色模式' : 'Dark';
@@ -533,19 +533,59 @@ class AppStrings {
   String get failedToSaveLocalSettings =>
       isZh ? '保存本地设置失败' : 'Failed to save local settings';
 
+  String get settingsUsername => isZh ? '用户名' : 'Username';
+  String get settingsUsernameHint =>
+      isZh ? '填写好友认识的名字' : 'A name your friends recognize';
+  String get settingsUsernameHelper => isZh
+      ? '向房间成员展示；邮箱仍用于登录。用户名单独保存到账户。'
+      : 'Shown to room members; your email remains your login. Saved separately to your account.';
+  String get settingsUsernameLoadError => isZh
+      ? '无法读取用户名，请检查连接后重试。'
+      : 'Could not load your username. Check your connection and retry.';
+  String get settingsUsernameSaved => isZh
+      ? '用户名已保存，房间成员可看到这个名字。'
+      : 'Username saved. Room members can see this name.';
+  String get settingsSaveUsername => isZh ? '保存用户名' : 'Save username';
+  String get settingsReloadUsername => isZh ? '重新加载用户名' : 'Reload username';
+  String get settingsDeviceGroup => isZh ? '此设备' : 'This device';
+  String get settingsPreferencesGroup => isZh ? '界面偏好' : 'Preferences';
+  String get settingsAccountGroup => isZh ? '账户信息' : 'Account';
+  String get settingsConnectionGroup => isZh ? '连接配置' : 'Connection';
+  String get settingsAppVersion => isZh ? '应用版本' : 'App version';
+  String get settingsAboutGroup => isZh ? '版本与服务' : 'Version & service';
+  String get settingsLogsGroup => isZh ? '日志与支持' : 'Logs & support';
+  String get settingsBuildDetails => isZh ? '构建详情' : 'Build details';
+  String get settingsBuildDetailsHint => isZh
+      ? '提交号、构建标识与运行环境'
+      : 'Commits, build identifiers, and runtime details';
+  String get settingsCopyDetails => isZh ? '复制全部详情' : 'Copy all details';
+  String get settingsUndo => isZh ? '撤销修改' : 'Undo changes';
+  String get settingsReconnectImpact => isZh
+      ? '保存后需重新连接才能生效，重新连接会短暂中断当前网络。'
+      : 'Reconnect after saving to apply these changes. Reconnecting briefly interrupts the network.';
+  String get settingsDiagnosticsStoppedHint => isZh
+      ? '修改诊断地址前，请先停止 P2WLAN。'
+      : 'Stop P2WLAN before changing this address.';
+  String get settingsConnectionHint => isZh
+      ? '用于连接服务器和加入网络。修改后请保存。'
+      : 'Server and network connection settings. Save to apply your edits.';
+  String get settingsDeveloperHint => isZh
+      ? '查看版本、检查服务和收集排障信息。'
+      : 'Check your version, service, and troubleshooting information.';
+
   // --- Settings information architecture ---
-  String get settingsSectionGeneral => isZh ? '常规' : 'General';
+  String get settingsSectionGeneral => isZh ? '通用' : 'General';
   String get settingsSectionAccountNetwork =>
-      isZh ? '账号与网络' : 'Account & Network';
+      isZh ? '账户与连接' : 'Account & Connection';
   String get settingsSectionAdvancedNetwork =>
       isZh ? '高级网络' : 'Advanced Network';
   String get settingsSectionDeveloperDiagnostics =>
-      isZh ? '开发与诊断' : 'Developer & Diagnostics';
+      isZh ? '诊断与关于' : 'Diagnostics & About';
   // --- Settings category / IA ---
   String get settingsCategoryApplication => isZh ? '应用' : 'App';
   String get unsavedChanges => isZh ? '有未保存的更改' : 'Unsaved changes';
   String get udpSubsection => 'UDP';
-  String get relaySubsection => 'Relay';
+  String get relaySubsection => isZh ? '中继' : 'Relay';
 
   String get saveChanges => isZh ? '保存更改' : 'Save changes';
   String get saveChangesRestartRequired =>

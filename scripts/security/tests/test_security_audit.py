@@ -437,12 +437,12 @@ class ReleaseAssetTests(unittest.TestCase):
         assets_dir = root / "assets"
         assets_dir.mkdir()
         names = [
-            "p2wlan-flutter-android-arm64-release.apk",
-            "p2wlan-flutter-ios-arm64-unsigned.ipa",
-            "p2wlan-flutter-linux-x64.tar.gz",
-            "p2wlan-flutter-macos-arm64.dmg",
-            "p2wlan-flutter-macos-x64.dmg",
-            "p2wlan-flutter-windows-x64-setup.exe",
+            "p2wlan-android-arm64-release.apk",
+            "p2wlan-ios-arm64-unsigned.ipa",
+            "p2wlan-linux-x64.tar.gz",
+            "p2wlan-macos-arm64.dmg",
+            "p2wlan-macos-x64.dmg",
+            "p2wlan-windows-x64-setup.exe",
             "p2wlan-linux-arm64-cli.tar.gz",
             "p2wlan-linux-x64-cli.tar.gz",
         ]

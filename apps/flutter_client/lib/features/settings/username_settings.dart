@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/api/control_api.dart';
+import '../../app/app_strings.dart';
 
 /// Usernames are account display names, independent of login email and devices.
 class UsernameSettings extends StatefulWidget {
@@ -43,7 +44,9 @@ class _UsernameSettingsState extends State<UsernameSettings> {
       _name.text = name;
       _loaded = true;
     } catch (_) {
-      if (mounted) _error = '无法读取用户名，请检查连接，并确认控制服务器支持用户名功能。';
+      if (mounted) {
+        _error = AppStringsScope.of(context).settingsUsernameLoadError;
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -63,7 +66,7 @@ class _UsernameSettingsState extends State<UsernameSettings> {
       );
       if (!mounted) return;
       _name.text = name;
-      _saved = '用户名已保存，房间成员可看到这个名字。';
+      _saved = AppStringsScope.of(context).settingsUsernameSaved;
     } on ControlApiException catch (error) {
       if (mounted) _error = error.message;
     } finally {
@@ -79,42 +82,70 @@ class _UsernameSettingsState extends State<UsernameSettings> {
   }
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 20),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('用户名', style: Theme.of(context).textTheme.titleSmall),
-        const SizedBox(height: 8),
-        const Text('在房间中向好友展示，邮箱仍用于登录。'),
-        const SizedBox(height: 12),
-        if (_loaded)
-          TextField(
-            controller: _name,
-            enabled: !_busy,
-            maxLength: 32,
-            decoration: const InputDecoration(
-              labelText: '用户名',
-              hintText: '填写好友认识的名字',
-            ),
-            onSubmitted: _busy ? null : (_) => _save(),
+  Widget build(BuildContext context) {
+    final strings = AppStringsScope.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 640),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_loaded)
+                TextField(
+                  controller: _name,
+                  enabled: !_busy,
+                  maxLength: 32,
+                  decoration: InputDecoration(
+                    labelText: strings.settingsUsername,
+                    hintText: strings.settingsUsernameHint,
+                    helperText: strings.settingsUsernameHelper,
+                    helperMaxLines: 3,
+                  ),
+                  onSubmitted: _busy ? null : (_) => _save(),
+                )
+              else
+                Text(
+                  strings.settingsUsername,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              if (_busy) const LinearProgressIndicator(),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    _error!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
+              if (_saved != null)
+                Semantics(
+                  liveRegion: true,
+                  child: Text(
+                    _saved!,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              TextButton(
+                onPressed: _busy
+                    ? null
+                    : _loaded
+                    ? _save
+                    : _load,
+                child: Text(
+                  _loaded
+                      ? strings.settingsSaveUsername
+                      : strings.settingsReloadUsername,
+                ),
+              ),
+            ],
           ),
-        if (_busy) const LinearProgressIndicator(),
-        if (_error != null)
-          Text(
-            _error!,
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
-          ),
-        if (_saved != null) Text(_saved!),
-        TextButton(
-          onPressed: _busy
-              ? null
-              : _loaded
-              ? _save
-              : _load,
-          child: Text(_loaded ? '保存用户名' : '重新加载用户名'),
         ),
-      ],
-    ),
-  );
+      ),
+    );
+  }
 }

@@ -16,8 +16,8 @@ void _registerPhase7Tests() {
       (tester) async {
         await _pumpSettings(tester, api: _FakeDiagnosticsApi(health: false));
 
-        // Trigger a validation error on Account & Network.
-        await _openCategory(tester, 'Account & Network');
+        // Trigger a validation error on Account & Connection.
+        await _openCategory(tester, 'Account & Connection');
         await tester.enterText(
           _settingsTextField('Control server'),
           'ftp://ctrl.example',
@@ -25,7 +25,7 @@ void _registerPhase7Tests() {
         await tester.pump();
         await _tapSave(tester);
 
-        // Error is visible on Account & Network.
+        // Error is visible on Account & Connection.
         expect(find.textContaining('must use http or https'), findsOneWidget);
 
         // Switch to General — error must NOT appear.
@@ -40,7 +40,7 @@ void _registerPhase7Tests() {
     ) async {
       await _pumpSettings(tester, api: _FakeDiagnosticsApi(health: false));
 
-      await _openCategory(tester, 'Account & Network');
+      await _openCategory(tester, 'Account & Connection');
       await tester.enterText(
         _settingsTextField('Control server'),
         'ftp://ctrl.example',
@@ -51,7 +51,7 @@ void _registerPhase7Tests() {
 
       // Leave to General, then come back — error should still be there.
       await _openCategory(tester, 'General');
-      await _openCategory(tester, 'Account & Network');
+      await _openCategory(tester, 'Account & Connection');
       expect(find.textContaining('must use http or https'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
@@ -62,7 +62,7 @@ void _registerPhase7Tests() {
         api: _FakeDiagnosticsApi(health: false),
       );
 
-      await _openCategory(tester, 'Account & Network');
+      await _openCategory(tester, 'Account & Connection');
       // Enter invalid URL → save → error.
       await tester.enterText(
         _settingsTextField('Control server'),
@@ -95,7 +95,7 @@ void _registerPhase7Tests() {
         await _pumpSettings(tester, api: _FakeDiagnosticsApi(health: false));
 
         // Trigger a Developer diagnostics URL validation error.
-        await _openCategory(tester, 'Developer & Diagnostics');
+        await _openCategory(tester, 'Diagnostics & About');
         await tester.enterText(
           _settingsTextField('Diagnostics URL'),
           'ftp://127.0.0.1:39277',
@@ -207,7 +207,7 @@ void _registerPhase7Tests() {
       addTearDown(stores.dispose);
 
       // Open a category and dirty it.
-      await tester.tap(find.text('Account & Network'));
+      await tester.tap(find.text('Account & Connection'));
       await tester.pumpAndSettle();
       await tester.enterText(
         _settingsTextField('Control server'),
@@ -251,7 +251,7 @@ void _registerPhase7Tests() {
         addTearDown(stores.dispose);
 
         // Dirty a category.
-        await tester.tap(find.text('Account & Network'));
+        await tester.tap(find.text('Account & Connection'));
         await tester.pumpAndSettle();
         await tester.enterText(
           _settingsTextField('Control server'),
@@ -657,7 +657,7 @@ void _registerPhase7Tests() {
 
   group('Phase 7.2 Settings detail large text', () {
     testWidgets(
-      '390x844 iOS scale 1.5 Account & Network detail renders without overflow',
+      '390x844 iOS scale 1.5 Account & Connection detail renders without overflow',
       (tester) async {
         final stores = await _pumpSettingsShell(
           tester,
@@ -667,8 +667,8 @@ void _registerPhase7Tests() {
         );
         addTearDown(stores.dispose);
 
-        // Open the Account & Network category.
-        await tester.tap(find.text('Account & Network'));
+        // Open the Account & Connection category.
+        await tester.tap(find.text('Account & Connection'));
         await tester.pumpAndSettle();
 
         // Verify key Account fields are present (possibly off-screen →
@@ -836,7 +836,7 @@ void _registerPhase7Tests() {
     );
 
     testWidgets(
-      '360x800 scale 1.5 Account & Network detail renders without overflow',
+      '360x800 scale 1.5 Account & Connection detail renders without overflow',
       (tester) async {
         final stores = await _pumpSettingsShell(
           tester,
@@ -846,8 +846,8 @@ void _registerPhase7Tests() {
         );
         addTearDown(stores.dispose);
 
-        // Open the Account & Network category.
-        await tester.tap(find.text('Account & Network'));
+        // Open the Account & Connection category.
+        await tester.tap(find.text('Account & Connection'));
         await tester.pumpAndSettle();
 
         await tester.ensureVisible(find.text('Control server'));

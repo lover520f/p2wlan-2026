@@ -96,7 +96,7 @@ class _SettingsCategoryRail extends StatelessWidget {
     final strings = AppStringsScope.of(context);
     return SizedBox(
       key: const Key('settings-category-rail'),
-      width: 176,
+      width: 184,
       child: ListView(
         padding: const EdgeInsets.symmetric(vertical: AppTokens.space6),
         children: [
@@ -156,7 +156,7 @@ class _CategoryRailItem extends StatelessWidget {
                   Expanded(
                     child: Text(
                       label,
-                      maxLines: 1,
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 13,
@@ -228,6 +228,7 @@ class _CategoryDetailView extends StatelessWidget {
       children: [
         Expanded(
           child: ListView(
+            key: PageStorageKey('settings-${category.name}'),
             keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             padding: const EdgeInsets.fromLTRB(2, 2, 2, 16),
             children: [
@@ -250,20 +251,23 @@ class _CategoryDetailView extends StatelessWidget {
                 ),
                 const SizedBox(height: AppTokens.space12),
               ],
-              _SettingsSurface(
-                padding: const EdgeInsets.all(AppTokens.space10),
-                child: content,
-              ),
+              AbsorbPointer(absorbing: state._saving, child: content),
             ],
           ),
         ),
         if (dirty)
           Padding(
             padding: const EdgeInsets.fromLTRB(2, AppTokens.space10, 2, 2),
-            child: _SaveBar(
-              busy: state._saving,
-              restartRequired: state._restartRequired,
-              onSave: () => state._saveCategory(category),
+            child: AnimatedBuilder(
+              animation: state._statusViewNotifier,
+              builder: (context, _) => _SaveBar(
+                busy: state._saving,
+                restartRequired:
+                    state._restartRequired ||
+                    state._draftNeedsRestart(category),
+                onUndo: () => state._resetCategory(category),
+                onSave: () => state._saveCategory(category),
+              ),
             ),
           ),
       ],
@@ -274,7 +278,7 @@ class _CategoryDetailView extends StatelessWidget {
     return switch (category) {
       SettingsCategory.accountNetwork => strings.settingsSubtitleAccountNetwork,
       SettingsCategory.advancedNetwork => strings.advancedNetworkSubtitle,
-      SettingsCategory.developer => strings.developerSectionSubtitle,
+      SettingsCategory.developer => strings.settingsDeveloperHint,
       _ => null,
     };
   }
@@ -370,10 +374,6 @@ Widget _categoryContent(
       state: state,
       strings: strings,
       credentialState: credentialState,
-    ),
-    SettingsCategory.application => _ApplicationSection(
-      state: state,
-      strings: strings,
     ),
     SettingsCategory.advancedNetwork => _AdvancedNetworkSection(
       state: state,

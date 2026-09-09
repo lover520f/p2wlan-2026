@@ -117,11 +117,11 @@ class _RawJsonState extends State<_RawJson> {
     await Clipboard.setData(ClipboardData(text: raw));
     if (!mounted) return;
     setState(() => _copied = true);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(strings.copiedDiagnosticsJson),
-        duration: const Duration(seconds: 2),
-      ),
+    showAppNotice(
+      context,
+
+      content: Text(strings.copiedDiagnosticsJson),
+      duration: const Duration(seconds: 2),
     );
     await Future<void>.delayed(const Duration(seconds: 2));
     if (mounted) {

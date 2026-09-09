@@ -186,7 +186,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p2wlan-flutter-android-arm64-ci-test-apk
+          name: p2wlan-android-arm64-ci-test-apk
           path: apps/flutter_client/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
 
   linux:
@@ -236,13 +236,13 @@ jobs:
         run: install -m 0755 ../../target/release/p2wlan-daemon build/linux/x64/release/bundle/p2wlan-daemon
 
       - name: Pack Linux bundle
-        run: tar -C build/linux/x64/release/bundle -czf build/p2wlan-flutter-linux-x64-release.tar.gz .
+        run: tar -C build/linux/x64/release/bundle -czf build/p2wlan-linux-x64-release.tar.gz .
 
       - name: Upload Linux bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p2wlan-flutter-linux-x64-release
-          path: apps/flutter_client/build/p2wlan-flutter-linux-x64-release.tar.gz
+          name: p2wlan-linux-x64-release
+          path: apps/flutter_client/build/p2wlan-linux-x64-release.tar.gz
 
   macos:
     name: macOS Release Apps
@@ -289,14 +289,14 @@ jobs:
               mv "$binary.thin" "$binary"
             done
             codesign --force --deep --sign - "$dst"
-            ditto -c -k --keepParent "$dst" "build/p2wlan-flutter-macos-$label-release.app.zip"
+            ditto -c -k --keepParent "$dst" "build/p2wlan-macos-$label-release.app.zip"
           done
 
       - name: Upload macOS apps
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p2wlan-flutter-macos-release
-          path: apps/flutter_client/build/p2wlan-flutter-macos-*-release.app.zip
+          name: p2wlan-macos-release
+          path: apps/flutter_client/build/p2wlan-macos-*-release.app.zip
 
   windows:
     name: Windows x64 Release Bundle
@@ -372,13 +372,13 @@ jobs:
       - name: Pack Windows bundle
         shell: pwsh
         working-directory: apps/flutter_client
-        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath build/p2wlan-flutter-windows-x64-release.zip -Force
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath build/p2wlan-windows-x64-release.zip -Force
 
       - name: Upload Windows bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p2wlan-flutter-windows-x64-release
-          path: apps/flutter_client/build/p2wlan-flutter-windows-x64-release.zip
+          name: p2wlan-windows-x64-release
+          path: apps/flutter_client/build/p2wlan-windows-x64-release.zip
 
   ios:
     name: iOS Compile

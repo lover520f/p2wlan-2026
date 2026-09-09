@@ -6,7 +6,6 @@ part of '../settings_page.dart';
 enum SettingsCategory {
   general,
   accountNetwork,
-  application,
   advancedNetwork,
   developer;
 
@@ -15,7 +14,6 @@ enum SettingsCategory {
     return switch (this) {
       SettingsCategory.general => strings.settingsSectionGeneral,
       SettingsCategory.accountNetwork => strings.settingsSectionAccountNetwork,
-      SettingsCategory.application => strings.settingsCategoryApplication,
       SettingsCategory.advancedNetwork =>
         strings.settingsSectionAdvancedNetwork,
       SettingsCategory.developer => strings.settingsSectionDeveloperDiagnostics,
@@ -26,9 +24,8 @@ enum SettingsCategory {
     return switch (this) {
       SettingsCategory.general => Icons.tune_rounded,
       SettingsCategory.accountNetwork => Icons.admin_panel_settings_outlined,
-      SettingsCategory.application => Icons.desktop_windows_outlined,
       SettingsCategory.advancedNetwork => Icons.router_outlined,
-      SettingsCategory.developer => Icons.code_rounded,
+      SettingsCategory.developer => Icons.info_outline_rounded,
     };
   }
 }
@@ -40,24 +37,15 @@ List<SettingsCategory> visibleSettingsCategories(PlatformCapabilities caps) {
     SettingsCategory.general,
     SettingsCategory.accountNetwork,
   ];
-  if (caps.canUseSystemTray) {
-    categories.add(SettingsCategory.application);
-  }
   if (caps.canActAsLocalVpnNode) {
     categories.add(SettingsCategory.advancedNetwork);
   }
-  if (caps.canControlLocalDaemon) {
-    categories.add(SettingsCategory.developer);
-  }
+  categories.add(SettingsCategory.developer);
   return categories;
 }
 
-/// Desktop keeps the category rail down to the smallest supported window. The
-/// global desktop sidebar and the settings rail are deliberately allowed to
-/// coexist in a narrow two-pane layout; individual preference rows stack when
-/// the detail column gets tight. Touch platforms retain the larger breakpoint
-/// so a tablet still gets the same full-screen category route as a phone.
-const _settingsDesktopSidebarBreakpoint = 520.0;
+/// Keep at least 500px for details before adding secondary navigation.
+const _settingsDesktopSidebarBreakpoint = 800.0;
 const _settingsTouchSidebarBreakpoint = 880.0;
 
 enum _SettingsLayout { expanded, rootDetail }

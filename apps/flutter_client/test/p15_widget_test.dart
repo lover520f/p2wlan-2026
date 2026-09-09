@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
+
+import 'package:flutter/rendering.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -34,6 +37,7 @@ import 'package:p2wlan_flutter_client/shared/formatters.dart';
 part 'p15_widget/dashboard_tests.dart';
 part 'p15_widget/settings_tests.dart';
 part 'p15_widget/settings_phase6_tests.dart';
+part 'p15_widget/settings_redesign_tests.dart';
 part 'p15_widget/nodes_tests.dart';
 part 'p15_widget/nodes_shell_tests.dart';
 part 'p15_widget/network_tests.dart';
@@ -49,6 +53,7 @@ void main() {
   _registerDashboardTests();
   _registerSettingsTests();
   _registerSettingsPhase6Tests();
+  _registerSettingsRedesignTests();
   _registerNodesTests();
   _registerNodesShellTests();
   _registerNetworkTests();
