@@ -127,7 +127,10 @@ Future<List<Map<String, String>>> _collectCurrentStartupFiles({
   final inlineFiles = <SessionLogFile>[];
   for (final profileId in activeRoomProfileIds) {
     final daemonPath =
-        '$logDirPath${separator}rooms${separator}$profileId${separator}p2wlan-daemon.log';
+        '$logDirPath$separator'
+        'rooms$separator'
+        '$profileId$separator'
+        'p2wlan-daemon.log';
     if (await File(daemonPath).exists()) {
       extraFiles.add((
         name: 'rooms/$profileId/p2wlan-daemon.log',
@@ -148,7 +151,10 @@ Future<List<Map<String, String>>> _collectCurrentStartupFiles({
       );
     } else {
       final summaryPath =
-          '$logDirPath${separator}rooms${separator}$profileId${separator}status-summary.json';
+          '$logDirPath$separator'
+          'rooms$separator'
+          '$profileId$separator'
+          'status-summary.json';
       if (await File(summaryPath).exists()) {
         extraFiles.add((
           name: 'rooms/$profileId/status-summary.json',

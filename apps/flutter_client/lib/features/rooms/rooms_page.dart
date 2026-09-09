@@ -818,7 +818,6 @@ class _RoomsPageState extends State<RoomsPage> {
     }
     if (room.isOwner) owner = owner.isEmpty ? '我' : '$owner（我）';
     final session = _parallel.session(room.id);
-    final connected = _roomSnapshot(room) != null;
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(14),
