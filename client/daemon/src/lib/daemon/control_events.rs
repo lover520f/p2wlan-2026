@@ -781,31 +781,71 @@ impl Daemon {
     async fn wait_for_peer_offer_identity(
         &self,
         peer_id: &str,
+        expected_sender_public_key: Option<&str>,
         cancellation: &mut watch::Receiver<bool>,
     ) -> bool {
         let deadline = Instant::now() + UNKNOWN_PEER_OFFER_WAIT;
         loop {
             if self
                 .peers
-                .peer_identity_public_key_sync(peer_id)
-                .is_some()
+                .signal_sender_identity_matches_peer_sync(peer_id, expected_sender_public_key)
+                && self.peers.peer_session_generation_sync(peer_id).is_some()
             {
                 return true;
             }
             if self
                 .restore_peer_offer_identity_from_control_roster(peer_id)
                 .await
+                && self
+                    .peers
+                    .signal_sender_identity_matches_peer_sync(peer_id, expected_sender_public_key)
+                && self.peers.peer_session_generation_sync(peer_id).is_some()
             {
                 return true;
             }
             if *cancellation.borrow() {
                 return false;
             }
+            let recorded_key = self.peers.peer_identity_recorded_public_key_sync(peer_id);
+            if let (Some(recorded), Some(expected)) = (recorded_key.as_deref(), expected_sender_public_key) {
+                if !expected.trim().is_empty() && !recorded.trim().is_empty() && expected.trim() != recorded.trim() {
+                    debug!(
+                        "Rejecting peer offer from {peer_id}: sender key {expected} does not match recorded key {recorded}"
+                    );
+                    self.timeline.emit(
+                        "peer_offer_rejected",
+                        None,
+                        Some("sender_key_mismatch"),
+                        Some(format!("peer={peer_id}")),
+                    );
+                    return false;
+                }
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
+                let peers_snapshot = self.control.peers().await;
+                let peer_entry = peers_snapshot.get(peer_id);
+                let reason = match peer_entry {
+                    None => "membership_revoked",
+                    Some(peer) if !peer.online => "peer_lifecycle_pending",
+                    Some(peer)
+                        if expected_sender_public_key.is_some_and(|k| {
+                            !k.trim().is_empty() && k.trim() != peer.public_key.trim()
+                        }) =>
+                    {
+                        "sender_key_mismatch"
+                    }
+                    _ => "peer_lifecycle_pending",
+                };
                 debug!(
-                    "Dropping deferred peer offer from {peer_id}: peer identity was not registered within {:?}",
+                    "Dropping deferred peer offer from {peer_id}: peer identity was not registered within {:?}, reason={reason}",
                     UNKNOWN_PEER_OFFER_WAIT
+                );
+                self.timeline.emit(
+                    "peer_offer_rejected",
+                    None,
+                    Some(reason),
+                    Some(format!("peer={peer_id}")),
                 );
                 return false;
             }
@@ -1628,9 +1668,32 @@ impl Daemon {
                 return;
             }
             if !self
-                .wait_for_peer_offer_identity(&offer.from_node_id, &mut reservation.cancellation)
+                .wait_for_peer_offer_identity(
+                    &offer.from_node_id,
+                    offer.sender_public_key.as_deref(),
+                    &mut reservation.cancellation,
+                )
                 .await
             {
+                let peers_snapshot = self.control.peers().await;
+                let peer_entry = peers_snapshot.get(&peer_id);
+                let terminal = match peer_entry {
+                    None => true,
+                    Some(peer)
+                        if offer
+                            .sender_public_key
+                            .as_deref()
+                            .is_some_and(|k| !k.trim().is_empty() && k.trim() != peer.public_key.trim()) =>
+                    {
+                        true
+                    }
+                    _ => false,
+                };
+                let outcome = if terminal {
+                    control::SignalApplyOutcome::TerminalRejected
+                } else {
+                    control::SignalApplyOutcome::Retry
+                };
                 // A newer offer may have replaced the timed-out value while
                 // the peer was still unknown.  Consume it under the same
                 // owner; otherwise release the owner so a later signal can
@@ -1640,10 +1703,10 @@ impl Daemon {
                     .lock()
                     .finish_responder_work(&peer_id, reservation.owner)
                 else {
-                    offer.complete_delivery(control::SignalApplyOutcome::Retry);
+                    offer.complete_delivery(outcome);
                     return;
                 };
-                offer.complete_delivery(control::SignalApplyOutcome::Retry);
+                offer.complete_delivery(outcome);
                 offer = next;
                 continue;
             }
@@ -1794,7 +1857,11 @@ impl Daemon {
                 return;
             }
             if !self
-                .wait_for_peer_offer_identity(&peer_id, &mut reservation.cancellation)
+                .wait_for_peer_offer_identity(
+                    &peer_id,
+                    offer.sender_public_key.as_deref(),
+                    &mut reservation.cancellation,
+                )
                 .await
             {
                 let Some(next) = self
@@ -3263,15 +3330,37 @@ impl Daemon {
                             )),
                         );
                         let peer_known = self.peers.peer_exists_sync(&from_node_id);
-                        if !peer_known {
-                            // REST signal delivery can beat the independent roster poll.
-                            // Both bounded owners wait for identity publication; waking
-                            // the poll keeps that interval short without blocking this actor.
-                            self.control.refresh_peers_now();
-                        } else if !self.signal_sender_identity_matches_peer(
+                        let peer_online = self
+                            .peers
+                            .peer_session_generation_sync(&from_node_id)
+                            .is_some();
+                        let identity_matches = self.signal_sender_identity_matches_peer(
                             &from_node_id,
                             sender_public_key.as_deref(),
-                        ) {
+                        );
+                        if peer_known && peer_online && identity_matches {
+                            // Fast path: peer is known, online, and sender identity matches.
+                        } else if !peer_known || !peer_online {
+                            // REST signal delivery can beat the independent roster poll,
+                            // or the peer is known from a previous poll but recorded as offline.
+                            // Both bounded owners wait for identity/online publication; waking
+                            // the poll keeps that interval short without blocking this actor.
+                            self.control.refresh_peers_now();
+                            let reason = if !peer_known {
+                                "peer_unknown"
+                            } else {
+                                "peer_lifecycle_pending"
+                            };
+                            self.timeline.emit(
+                                "remote_signal_deferred",
+                                None,
+                                Some(reason),
+                                Some(format!(
+                                    "peer={from_node_id} candidate_generation={candidate_generation}"
+                                )),
+                            );
+                        } else {
+                            // Peer is known and online, but sender public key does not match.
                             self.peers.record_direct_event_non_queuing(
                                 &from_node_id,
                                 "remote_signal_stale_identity",
@@ -3285,7 +3374,7 @@ impl Daemon {
                             self.timeline.emit(
                                 "remote_signal_rejected",
                                 None,
-                                Some("stale_sender_identity"),
+                                Some("sender_key_mismatch"),
                                 Some(format!(
                                     "peer={from_node_id} candidate_generation={candidate_generation}"
                                 )),
@@ -3428,13 +3517,13 @@ impl Daemon {
                                 None,
                                 None,
                                 Some(format!(
-                                    "peer={} owner={} network_generation={} candidate_generation={} session_fp={} deferred_unknown={}",
+                                    "peer={} owner={} network_generation={} candidate_generation={} session_fp={} deferred={}",
                                     from_node_id,
                                     reservation.owner,
                                     network_generation,
                                     candidate_generation,
                                     handshake_token_fingerprint(session_id.as_deref()),
-                                    !peer_known
+                                    !peer_known || !peer_online
                                 )),
                             );
                             responder_work.push(Box::pin(async move {
@@ -3481,7 +3570,9 @@ impl Daemon {
                         // its sender: wake the peer poll so the pending initiator
                         // transaction can be consumed without waiting out the
                         // regular cadence.
-                        if !self.peers.peer_exists_sync(&from_node_id) {
+                        if !self.peers.peer_exists_sync(&from_node_id)
+                            || self.peers.peer_session_generation_sync(&from_node_id).is_none()
+                        {
                             self.control.refresh_peers_now();
                         }
                         self.peers.record_direct_event_non_queuing(
@@ -3695,7 +3786,9 @@ impl Daemon {
                         // A peer-reflexive observation may arrive before the
                         // peer-list poll registers the sender; wake the poll so a
                         // cold-start handshake is not delayed by the cadence.
-                        if !self.peers.peer_exists_sync(&from_node_id) {
+                        if !self.peers.peer_exists_sync(&from_node_id)
+                            || self.peers.peer_session_generation_sync(&from_node_id).is_none()
+                        {
                             self.control.refresh_peers_now();
                         }
                         let work = PendingPeerReflexive {

@@ -23,14 +23,15 @@ import (
 )
 
 const (
-	ProtocolName          = "p2wlan.signaling.v1"
-	ProtocolVersion       = 1
-	DefaultMaxConnections = 10_000
-	sendQueueCapacity     = 64
-	readLimitBytes        = 4 << 10
-	writeWait             = 5 * time.Second
-	pongWait              = 45 * time.Second
-	pingPeriod            = 20 * time.Second
+	ProtocolName            = "p2wlan.signaling.v1"
+	ProtocolVersion         = 1
+	DefaultMaxConnections   = 10_000
+	sendQueueCapacity       = 64
+	readLimitBytes          = 4 << 10
+	writeWait               = 5 * time.Second
+	upgradeHandshakeTimeout = 5 * time.Second
+	pongWait                = 45 * time.Second
+	pingPeriod              = 20 * time.Second
 )
 
 var (
@@ -51,6 +52,14 @@ type closeRequest struct {
 	code int
 	text string
 }
+
+// UpgradeGuard runs before a WebSocket upgrade and may retain a short-lived
+// critical-section release function until the authenticated connection has
+// been registered in the hub.  It is used by the control plane to make a
+// registration-session validation atomic with the upgrade/register window.
+// A guard writes its own HTTP error response and returns ok=false when it
+// rejects the request.
+type UpgradeGuard func(http.ResponseWriter, *http.Request) (release func(), ok bool)
 
 // Client is one authenticated device connection. Identity comes exclusively
 // from device credential claims; clients never self-declare node or network.
@@ -221,7 +230,9 @@ func (c *Client) requestClose(code int, text string) {
 }
 
 // ServeWS upgrades a request already authenticated by RequireDeviceAuth.
-func ServeWS(hub *Hub) http.HandlerFunc {
+// An optional guard can fence an identity check with hub registration.  The
+// variadic form preserves the direct callers used by older tests and embeds.
+func ServeWS(hub *Hub, guards ...UpgradeGuard) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, err := auth.GetDeviceClaims(r.Context())
 		if err != nil {
@@ -236,12 +247,26 @@ func ServeWS(hub *Hub) http.HandlerFunc {
 			http.Error(w, `{"error":"required websocket subprotocol is missing"}`, http.StatusUpgradeRequired)
 			return
 		}
+		var releaseGuard func()
+		if len(guards) > 0 && guards[0] != nil {
+			var ok bool
+			releaseGuard, ok = guards[0](w, r)
+			if !ok {
+				return
+			}
+			defer func() {
+				if releaseGuard != nil {
+					releaseGuard()
+				}
+			}()
+		}
 
 		upgrader := websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-			Subprotocols:    []string{ProtocolName},
-			CheckOrigin:     checkOrigin,
+			HandshakeTimeout: upgradeHandshakeTimeout,
+			ReadBufferSize:   1024,
+			WriteBufferSize:  1024,
+			Subprotocols:     []string{ProtocolName},
+			CheckOrigin:      checkOrigin,
 		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -260,6 +285,13 @@ func ServeWS(hub *Hub) http.HandlerFunc {
 			expiresAt:  time.Unix(claims.ExpiresAt, 0),
 		}
 		previous, err := hub.register(client)
+		// Registration session fencing only needs to cover validation through
+		// hub registration.  Keeping it during readPump would deadlock the next
+		// daemon registration behind a long-lived socket.
+		if releaseGuard != nil {
+			releaseGuard()
+			releaseGuard = nil
+		}
 		if err != nil {
 			_ = conn.WriteControl(
 				websocket.CloseMessage,
@@ -390,6 +422,11 @@ func (h *Hub) Disconnect(nodeID string) {
 	client := h.clients[nodeID]
 	h.mu.RUnlock()
 	if client != nil {
+		// Stop accepting wake-ups before asking the writer to close the
+		// connection.  A registration handoff must not leave a short window in
+		// which Notify can enqueue a signal for the superseded daemon while its
+		// close request is waiting behind the writer's send queue.
+		client.stop()
 		client.requestClose(websocket.ClosePolicyViolation, "device authorization changed")
 	}
 }

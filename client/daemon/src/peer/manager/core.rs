@@ -59,6 +59,8 @@ impl PeerManager {
             dplpmtud_runtime: Arc::new(RwLock::new(None)),
             local_nat_profile: Arc::new(RwLock::new(None)),
             local_profile_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            local_profile_observation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            local_profile_current_observation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             local_interface_networks: Arc::new(RwLock::new(Vec::new())),
             traversal_history: Arc::new(RwLock::new(traversal_history)),
             traversal_history_path,
@@ -425,11 +427,48 @@ impl PeerManager {
     }
 
     /// Update the latest local NAT profile used by adaptive probe scheduling.
-    pub async fn update_nat_profile(&self, profile: NatProfile) {
-        let (profile_generation, profile_changed) = {
+    ///
+    /// A call to this method is the authenticated boundary for a completed
+    /// live STUN gather. It returns the exact version to put on the resulting
+    /// control publication: capability changes advance `g`, while any gather
+    /// with a server-reflexive response advances `o`. Ordinary endpoint
+    /// heartbeats never call this method and therefore replay, rather than
+    /// manufacture, the last observation sequence.
+    pub async fn update_nat_profile(&self, profile: NatProfile) -> NatProfilePublication {
+        let live_observation = profile
+            .observations
+            .iter()
+            .any(|observation| observation.mapped_address.is_some());
+        let (profile_generation, capabilities_changed, observation) = {
             let mut current = self.local_nat_profile.write().await;
-            if current.as_ref() == Some(&profile) {
-                (self.current_local_profile_generation_sync(), false)
+            let substantive_same = current.as_ref().is_some_and(|curr| {
+                curr.local_addr == profile.local_addr
+                    && curr.udp_blocked == profile.udp_blocked
+                    && curr.public_endpoint == profile.public_endpoint
+                    && curr.public_ip_stable == profile.public_ip_stable
+                    && curr.public_port_stable == profile.public_port_stable
+                    && curr.port_preserved == profile.port_preserved
+                    && curr.port_delta == profile.port_delta
+                    && curr.likely_symmetric == profile.likely_symmetric
+                    && curr.mapping_behavior == profile.mapping_behavior
+                    && curr.filtering_behavior == profile.filtering_behavior
+                    && curr.hairpin_behavior == profile.hairpin_behavior
+                    && curr.mapping_lifetime == profile.mapping_lifetime
+                    && curr.prediction_candidate == profile.prediction_candidate
+                    && curr.predicted_endpoints == profile.predicted_endpoints
+                    && curr.birthday_candidate == profile.birthday_candidate
+                    && curr.confidence == profile.confidence
+            });
+
+            if substantive_same {
+                // Transient observation fluctuations (e.g. STUN RTT jitter) update the
+                // cached profile age without advancing generation or clearing direct sessions.
+                *current = Some(profile.clone());
+                (
+                    self.current_local_profile_generation_sync(),
+                    false,
+                    self.next_local_profile_observation(live_observation),
+                )
             } else {
                 *current = Some(profile.clone());
                 let previous = self
@@ -440,7 +479,11 @@ impl PeerManager {
                         |generation| Some(generation.saturating_add(1)),
                     )
                     .unwrap_or(u64::MAX);
-                (previous.saturating_add(1), true)
+                (
+                    previous.saturating_add(1),
+                    true,
+                    self.next_local_profile_observation(live_observation),
+                )
             }
         };
         let network_generation = self.current_network_generation_sync();
@@ -450,6 +493,8 @@ impl PeerManager {
             event = "nat_profile_updated",
             network_generation,
             local_profile_generation = profile_generation,
+            local_observation_sequence = ?observation,
+            capabilities_changed,
             mapping_behavior = ?capabilities.mapping_behavior,
             filtering_behavior = ?capabilities.filtering_behavior,
             allocation_model = ?capabilities.allocation_model,
@@ -457,14 +502,54 @@ impl PeerManager {
             prediction_window = capabilities.prediction_window,
             "updated local NAT capability evidence"
         );
-        if profile_changed {
+        if capabilities_changed {
             self.clear_hard_hard_sessions(None).await;
+        }
+        NatProfilePublication {
+            generation: profile_generation,
+            observation,
+            observation_advanced: observation.is_some(),
         }
     }
 
     pub(crate) fn current_local_profile_generation_sync(&self) -> u64 {
         self.local_profile_generation
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Latest successful live-observation sequence for labels assembled from
+    /// the already-committed local NAT snapshot. New gather paths should use
+    /// the exact [`NatProfilePublication`] returned by [`Self::update_nat_profile`]
+    /// instead, so an older gather cannot borrow a newer profile version.
+    pub(crate) fn current_local_profile_observation_sync(&self) -> Option<u64> {
+        let observation = self
+            .local_profile_current_observation
+            .load(std::sync::atomic::Ordering::Acquire);
+        (observation != 0).then_some(observation)
+    }
+
+    /// Advance the daemon-local STUN observation counter only for a live
+    /// server-reflexive result, then bind (or clear) that sequence on the
+    /// profile currently protected by `local_nat_profile`'s writer lock.
+    fn next_local_profile_observation(&self, live_observation: bool) -> Option<u64> {
+        let observation = if live_observation {
+            let previous = self
+                .local_profile_observation
+                .fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |observation| Some(observation.saturating_add(1)),
+                )
+                .unwrap_or(u64::MAX);
+            Some(previous.saturating_add(1))
+        } else {
+            None
+        };
+        self.local_profile_current_observation.store(
+            observation.unwrap_or_default(),
+            std::sync::atomic::Ordering::Release,
+        );
+        observation
     }
 
     /// Publish the currently enumerated physical interface prefixes used by

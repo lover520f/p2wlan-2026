@@ -341,6 +341,7 @@ async fn poll_signals_skips_bad_handshake_without_dropping_healthy_signals() {
         &format!("http://{address}"),
         "test-token",
         "node-a",
+        None,
         &event_tx,
         0,
         &Arc::new(tokio::sync::Mutex::new(
@@ -384,8 +385,10 @@ async fn poll_signals_ack_mode_applies_then_acks_and_dedupes_redelivery() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let ack_posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let missing_registration_sequence = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let server = {
         let ack_posts = ack_posts.clone();
+        let missing_registration_sequence = missing_registration_sequence.clone();
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -404,6 +407,11 @@ async fn poll_signals_ack_mode_applies_then_acks_and_dedupes_redelivery() {
                     }
                 }
                 let request = String::from_utf8_lossy(&buf);
+                if !request.lines().any(|line| {
+                    line.eq_ignore_ascii_case("x-p2wlan-registration-seq: 41")
+                }) {
+                    missing_registration_sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 if request.starts_with("POST") {
                     // The ACK request: count it and reply success.
                     ack_posts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -457,6 +465,7 @@ async fn poll_signals_ack_mode_applies_then_acks_and_dedupes_redelivery() {
         &format!("http://{address}"),
         "test-token",
         "node-a",
+        Some(41),
         &event_tx,
         0,
         &dedup,
@@ -489,6 +498,7 @@ async fn poll_signals_ack_mode_applies_then_acks_and_dedupes_redelivery() {
         &format!("http://{address}"),
         "test-token",
         "node-a",
+        Some(41),
         &event_tx,
         0,
         &dedup,
@@ -525,6 +535,7 @@ async fn poll_signals_ack_mode_applies_then_acks_and_dedupes_redelivery() {
         &format!("http://{address}"),
         "test-token",
         "node-a",
+        Some(41),
         &event_tx,
         0,
         &dedup,
@@ -542,6 +553,11 @@ async fn poll_signals_ack_mode_applies_then_acks_and_dedupes_redelivery() {
     })
     .await
     .expect("the redelivered batch must still be ACKed");
+    assert_eq!(
+        missing_registration_sequence.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "every signal GET and ACK from an incarnation-aware daemon must carry its registration sequence"
+    );
     server.abort();
 }
 

@@ -110,7 +110,14 @@ impl ControlSupervisor {
             if let Some(auth) = auth {
                 let release = async {
                     let http = self.http.current()?;
-                    release_presence(&http, &auth.base_url, &auth.token, &auth.self_node_id).await
+                    release_presence(
+                        &http,
+                        &auth.base_url,
+                        &auth.token,
+                        &auth.self_node_id,
+                        auth.registration_seq,
+                    )
+                    .await
                 };
                 match timeout(Duration::from_millis(1250), release).await {
                     Ok(Ok(())) => info!(reason_code = "presence_released", "Device presence released"),

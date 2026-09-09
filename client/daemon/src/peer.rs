@@ -14,8 +14,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use p2pnet_crypto::{hmac, NodeIdentity};
 use p2pnet_nat::{
-    parse_nat_hint, plan_traversal, LocalNetwork, MappingBehavior, NatCapabilities, NatProfile,
-    ProbeMacKey, RemoteNatProfile, TraversalContext, TraversalPlan,
+    parse_nat_hint, plan_traversal, FilteringBehavior, LocalNetwork, MappingBehavior,
+    NatCapabilities, NatProfile, ProbeMacKey, RemoteNatProfile, TraversalContext, TraversalPlan,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;

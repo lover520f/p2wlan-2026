@@ -65,7 +65,66 @@ class _RoomsPageState extends State<RoomsPage> {
     if (mounted) {
       setState(() {});
       _roomViewRevision.value++;
+      _scheduleTimer();
     }
+  }
+
+  bool _isPeerTransitional(PeerSnapshot p) {
+    if (!p.online) return false;
+    final state = p.state.toLowerCase();
+    if (state.contains('connect') ||
+        state.contains('handshake') ||
+        state.contains('prob') ||
+        state.contains('punch')) {
+      return true;
+    }
+    if (p.path == 'probing' || p.path == 'direct_trial') return true;
+    if (p.path == 'relay' && !p.isRelayVerified) return true;
+    if (p.path == 'direct' && !p.isDirectVerified) return true;
+    return false;
+  }
+
+  bool _hasTransitionalConnection() {
+    for (final session in _parallel.sessions.values) {
+      if (session.phase == RoomConnectionPhase.starting) return true;
+      if (session.phase == RoomConnectionPhase.running) {
+        final snap = session.snapshot;
+        if (snap == null) return true;
+        final onlinePeers = snap.peers.where((p) => p.online);
+        if (onlinePeers.any(_isPeerTransitional)) {
+          return true;
+        }
+      }
+    }
+    final primaryRoomId = widget.settingsStore.settings.networkId;
+    if (isRoomNetwork(primaryRoomId)) {
+      if (widget.statusStore.daemonStarting) return true;
+      final snap = widget.statusStore.snapshot;
+      if (snap != null && snap.networkId == primaryRoomId) {
+        final onlinePeers = snap.peers.where((p) => p.online);
+        if (onlinePeers.any(_isPeerTransitional)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  void _scheduleTimer() {
+    _timer?.cancel();
+    if (!mounted) return;
+    final hasTransitional = _hasTransitionalConnection();
+    final interval = hasTransitional
+        ? const Duration(milliseconds: 500)
+        : const Duration(seconds: 5);
+    _timer = Timer(interval, () {
+      if (!mounted) return;
+      if (!_busy && !_refreshing) {
+        unawaited(_refresh(silent: true).whenComplete(_scheduleTimer));
+      } else {
+        _scheduleTimer();
+      }
+    });
   }
 
   bool get _canConnect =>
@@ -104,9 +163,7 @@ class _RoomsPageState extends State<RoomsPage> {
         widget.initialRoomId ??
         (isRoomNetwork(settings.networkId) ? settings.networkId : null);
     unawaited(_refresh());
-    _timer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (!_busy && !_refreshing) unawaited(_refresh(silent: true));
-    });
+    _scheduleTimer();
     _handleInvitation();
   }
 
@@ -210,15 +267,72 @@ class _RoomsPageState extends State<RoomsPage> {
     return '未设置用户名';
   }
 
-  String _connectionLabel(ParallelRoomSession? session) =>
-      switch (session?.phase) {
-        RoomConnectionPhase.starting => '连接中',
-        RoomConnectionPhase.running => '已连接',
-        RoomConnectionPhase.stopping => '断开中',
-        RoomConnectionPhase.unavailable => '连接不可用',
-        RoomConnectionPhase.failed => '需处理',
-        null => '未连接',
-      };
+  String _connectionLabel(
+    ParallelRoomSession? session, [
+    DiagnosticsSnapshot? snapshot,
+  ]) {
+    if (session != null) {
+      switch (session.phase) {
+        case RoomConnectionPhase.stopping:
+          return '断开中';
+        case RoomConnectionPhase.unavailable:
+          return '连接不可用';
+        case RoomConnectionPhase.failed:
+          return '需处理';
+        case RoomConnectionPhase.starting:
+          if (snapshot == null && session.snapshot == null) return '本机启动';
+        case RoomConnectionPhase.running:
+          break;
+      }
+    }
+
+    final currentSnapshot = snapshot ?? session?.snapshot;
+    if (currentSnapshot == null) {
+      return session?.phase == RoomConnectionPhase.starting
+          ? '本机启动'
+          : (session == null ? '未连接' : '连接中');
+    }
+
+    final onlinePeers = currentSnapshot.peers.where((p) => p.online).toList();
+    if (onlinePeers.isEmpty) {
+      return '等待好友';
+    }
+
+    if (onlinePeers.any((p) => p.isDirectVerified)) {
+      return '已直连';
+    }
+
+    final hasRelay = onlinePeers.any((p) => p.isRelayVerified);
+    final isProbing = onlinePeers.any(
+      (p) =>
+          p.path == 'probing' ||
+          p.path == 'direct_trial' ||
+          p.probeLatencyMs != null ||
+          p.state.toLowerCase().contains('punch') ||
+          p.state.toLowerCase().contains('prob'),
+    );
+
+    if (hasRelay && isProbing) {
+      return '中继可用 · 直连探测';
+    }
+    if (hasRelay) {
+      return '中继可用';
+    }
+
+    final isHandshaking = onlinePeers.any(
+      (p) =>
+          p.state.toLowerCase().contains('handshake') ||
+          p.state.toLowerCase().contains('connect'),
+    );
+    if (isHandshaking) {
+      return '建立加密会话';
+    }
+    if (isProbing) {
+      return '直连探测';
+    }
+
+    return '已连接';
+  }
 
   String _message(Object error) =>
       error is RoomException ? error.message : '操作未完成，请检查连接后重试';
@@ -704,7 +818,6 @@ class _RoomsPageState extends State<RoomsPage> {
     }
     if (room.isOwner) owner = owner.isEmpty ? '我' : '$owner（我）';
     final session = _parallel.session(room.id);
-    final connected = _roomSnapshot(room) != null;
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(14),
@@ -791,7 +904,7 @@ class _RoomsPageState extends State<RoomsPage> {
                         child: Icon(Icons.lock_outline, size: 16),
                       ),
                     Text(
-                      connected ? '已连接' : _connectionLabel(session),
+                      _connectionLabel(session, _roomSnapshot(room)),
                       style: Theme.of(context).textTheme.labelMedium,
                     ),
                   ],
@@ -1277,7 +1390,7 @@ class _RoomsPageState extends State<RoomsPage> {
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
-                        primaryConnected ? '已连接' : _connectionLabel(connection),
+                        _connectionLabel(connection, _roomSnapshot(room)),
                         style: Theme.of(context).textTheme.labelMedium,
                       ),
                     ),

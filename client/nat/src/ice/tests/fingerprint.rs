@@ -257,6 +257,33 @@ fn test_profile_generation_is_additive_and_bounded() {
     assert_eq!(hint.profile_generation, Some(u64::MAX));
 }
 
+#[test]
+fn test_observation_and_registration_lifecycle_round_trip_without_exceeding_cap() {
+    let profile = fingerprint_profile(
+        MappingBehavior::AddressOrPortDependent,
+        FilteringBehavior::AddressOrPortDependent,
+        HairpinBehavior::NotApplicable,
+        false,
+        true,
+        Some(i32::MAX),
+        Some(true),
+        100,
+    );
+
+    let label = profile.control_label_with_evidence(u64::MAX, Some(u64::MAX), Some(u64::MAX));
+    assert!(label.len() <= 128, "label exceeds server cap: {label}");
+    let hint = parse_nat_hint(&label);
+    assert!(hint.parsed, "bounded label must remain parseable: {label}");
+    assert_eq!(hint.profile_generation, Some(u64::MAX));
+    assert_eq!(hint.observation_sequence, Some(u64::MAX));
+    assert_eq!(hint.registration_lifecycle, Some(u64::MAX));
+    // The cap fallback is permitted to omit diagnostics, but must retain the
+    // traversal-bearing mapping/allocation/delta information.
+    assert_eq!(hint.mapping, MappingBehavior::AddressOrPortDependent);
+    assert_eq!(hint.allocation, NatAllocation::Linear);
+    assert_eq!(hint.port_delta, Some(i32::MAX));
+}
+
 /// Mirror of `control_label`'s allocation derivation, used only to assert the
 /// round-tripped `a=` equals the source profile's derived allocation.
 fn expected_allocation(p: &NatProfile) -> NatAllocation {

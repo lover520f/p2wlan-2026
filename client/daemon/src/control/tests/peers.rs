@@ -31,6 +31,7 @@ async fn poll_peers_preserves_offline_devices_from_control_plane() {
         "test-token",
         &config,
         "self-node",
+        None,
         &state,
         &event_tx,
     )
@@ -94,6 +95,7 @@ async fn poll_peers_admits_online_peer_before_historical_offline_rows() {
         "test-token",
         &config,
         "self-node",
+        None,
         &state,
         &event_tx,
     )

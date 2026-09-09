@@ -22,6 +22,11 @@ type Server struct {
 	relayTicketSigner        *auth.RelayTicketSigner
 	relayRevocationFeedToken string
 	signalNotifier           *signalNotifier
+	// registrationSessionLocks serializes a device's registration with its
+	// device-token control actions.  The database performs the final conditional
+	// update for lease-changing operations; this lock covers complex signal and
+	// WebSocket actions that span multiple queries in this server process.
+	registrationSessionLocks registrationSessionLocker
 }
 
 // NewServer creates a new API server.
@@ -63,6 +68,7 @@ func NewServer(authService *auth.Service, hub *signaling.Hub, db *database.DB) *
 		relayTicketSigner:        signer,
 		relayRevocationFeedToken: strings.TrimSpace(os.Getenv("RELAY_REVOCATION_FEED_TOKEN")),
 		signalNotifier:           newSignalNotifier(),
+		registrationSessionLocks: newRegistrationSessionLocks(),
 	}
 }
 

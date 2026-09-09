@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import '../build_info.dart';
 import '../diagnostics/session_log_bundle.dart';
+import '../diagnostics/support_log_protocol.dart';
 import '../security/redactor.dart';
 import '../state/settings_store.dart';
 
@@ -31,10 +32,15 @@ class DeviceUpdateResult {
 }
 
 class SupportLogUploadResult {
-  const SupportLogUploadResult({required this.uploadId, this.receivedAt});
+  const SupportLogUploadResult({
+    required this.uploadId,
+    this.receivedAt,
+    this.instances = 1,
+  });
 
   final String uploadId;
   final String? receivedAt;
+  final int instances;
 }
 
 class ControlApi {
@@ -44,7 +50,7 @@ class ControlApi {
 
   static const _requestTimeout = Duration(seconds: 8);
   static const _supportLogUploadTimeout = Duration(seconds: 60);
-  static const _maxSupportLogCompressedBytes = 8 * 1024 * 1024;
+  static const _maxSupportLogCompressedBytes = maxSupportLogCompressedBytes;
 
   final HttpClient _client;
 
@@ -222,6 +228,7 @@ class ControlApi {
     required ClientBuildInfo clientBuild,
     required DaemonBuildInfo? daemonBuild,
     required Iterable<SessionLogFile> files,
+    Iterable<String> omittedRoomProfileIds = const [],
   }) async {
     final token = authToken.trim();
     if (token.isEmpty) {
@@ -234,36 +241,46 @@ class ControlApi {
     if (logFiles.isEmpty) {
       throw const ControlApiException('没有找到本次启动的日志');
     }
+    final omittedProfiles = _normalizeOmittedRoomProfiles(
+      omittedRoomProfileIds,
+    );
+    _validateSupportLogFiles(logFiles);
 
     // Redaction, JSON expansion, UTF-8 encoding and gzip are deliberately
     // performed off the Flutter UI isolate. `async` alone does not move CPU
     // work off the main isolate and was causing Android to freeze on large
     // daemon logs.
-    final compressed = await _prepareSupportLogPayload(
-      uploadedAt: DateTime.now().toUtc().toIso8601String(),
-      deviceName: deviceName.trim(),
-      platform: Platform.operatingSystem,
-      clientBuild: {
-        'app_version': clientBuild.appVersion,
-        'git_commit': clientBuild.gitCommit,
-        'build_id': clientBuild.buildId,
-        'dirty': clientBuild.dirtyLabel,
-        'diff_hash': clientBuild.diffHash,
-        'profile': clientBuild.profile,
-      },
-      daemonBuild: daemonBuild == null
-          ? null
-          : {
-              'app_version': daemonBuild.appVersion,
-              'daemon_version': daemonBuild.daemonVersion,
-              'git_commit': daemonBuild.gitCommit,
-              'build_id': daemonBuild.buildId,
-              'dirty': daemonBuild.dirtyLabel,
-              'diff_hash': daemonBuild.diffHash,
-              'profile': daemonBuild.profile,
-            },
-      files: logFiles,
-    );
+    late final Uint8List compressed;
+    try {
+      compressed = await _prepareSupportLogPayload(
+        uploadedAt: DateTime.now().toUtc().toIso8601String(),
+        deviceName: deviceName.trim(),
+        platform: Platform.operatingSystem,
+        clientBuild: {
+          'app_version': clientBuild.appVersion,
+          'git_commit': clientBuild.gitCommit,
+          'build_id': clientBuild.buildId,
+          'dirty': clientBuild.dirtyLabel,
+          'diff_hash': clientBuild.diffHash,
+          'profile': clientBuild.profile,
+        },
+        daemonBuild: daemonBuild == null
+            ? null
+            : {
+                'app_version': daemonBuild.appVersion,
+                'daemon_version': daemonBuild.daemonVersion,
+                'git_commit': daemonBuild.gitCommit,
+                'build_id': daemonBuild.buildId,
+                'dirty': daemonBuild.dirtyLabel,
+                'diff_hash': daemonBuild.diffHash,
+                'profile': daemonBuild.profile,
+              },
+        files: logFiles,
+        omittedRoomProfileIds: omittedProfiles,
+      );
+    } on _SupportLogPayloadTooLarge {
+      throw const ControlApiException('日志展开后过大，请缩短本次启动时间后再试');
+    }
     if (compressed.length > _maxSupportLogCompressedBytes) {
       throw const ControlApiException('日志压缩后仍然过大，请缩短本次启动时间后再试');
     }
@@ -304,9 +321,15 @@ class ControlApi {
       if (uploadId.isEmpty || body['success'] == false) {
         throw const ControlApiException('控制服务器没有返回日志上传编号');
       }
+      final instances = body['instances'] is num
+          ? (body['instances'] as num).toInt()
+          : (body['instances'] is String
+                ? int.tryParse(body['instances'] as String) ?? 1
+                : 1);
       return SupportLogUploadResult(
         uploadId: uploadId,
         receivedAt: body['received_at']?.toString(),
+        instances: instances,
       );
     } on ControlApiException {
       rethrow;
@@ -402,8 +425,9 @@ Future<Uint8List> _prepareSupportLogPayload({
   required Map<String, String> clientBuild,
   required Map<String, String>? daemonBuild,
   required List<Map<String, String>> files,
+  required List<String> omittedRoomProfileIds,
 }) async {
-  final transferable = await Isolate.run(() {
+  final encoded = await Isolate.run<Map<String, Object?>>(() {
     final logFiles = files
         .map(
           (file) => <String, String>{
@@ -414,8 +438,25 @@ Future<Uint8List> _prepareSupportLogPayload({
           },
         )
         .toList(growable: false);
+    final roomProfiles = <String>{};
+    for (final f in logFiles) {
+      final name = f['name'] ?? '';
+      if (name.startsWith('rooms/')) {
+        final parts = name.split('/');
+        if (parts.length >= 2 && parts[1].isNotEmpty) {
+          roomProfiles.add(parts[1]);
+        }
+      } else if (name == 'p2wlan-room.log') {
+        roomProfiles.add('legacy');
+      }
+    }
+    final omittedProfiles = omittedRoomProfileIds
+        .where((profileId) => !roomProfiles.contains(profileId))
+        .toSet();
+    final hasRoomLogs = roomProfiles.isNotEmpty;
+    final schemaVersion = hasRoomLogs || omittedProfiles.isNotEmpty ? 2 : 1;
     final payload = <String, dynamic>{
-      'schema_version': 1,
+      'schema_version': schemaVersion,
       'uploaded_at': uploadedAt,
       'device_name': deviceName,
       'platform': platform,
@@ -423,13 +464,93 @@ Future<Uint8List> _prepareSupportLogPayload({
       ...?daemonBuild == null
           ? null
           : <String, dynamic>{'daemon_build': daemonBuild},
+      if (schemaVersion == 2)
+        'manifest': <String, dynamic>{
+          'total_instances': 1 + roomProfiles.length,
+          'has_room_logs': hasRoomLogs,
+          'retained_room_instances': roomProfiles.length,
+          if (omittedProfiles.isNotEmpty) ...<String, dynamic>{
+            'omitted_room_instances': omittedProfiles.length,
+            'omitted_reason': 'room_instance_budget',
+          },
+        },
       'files': logFiles,
     };
     final jsonBytes = utf8.encode(jsonEncode(payload));
+    if (jsonBytes.length > maxSupportLogExpandedBytes) {
+      return <String, Object?>{'expanded_too_large': true};
+    }
     final compressed = GZipCodec().encode(jsonBytes);
-    return TransferableTypedData.fromList([Uint8List.fromList(compressed)]);
+    return <String, Object?>{
+      'compressed': TransferableTypedData.fromList([
+        Uint8List.fromList(compressed),
+      ]),
+    };
   });
+  if (encoded['expanded_too_large'] == true) {
+    throw const _SupportLogPayloadTooLarge();
+  }
+  final transferable = encoded['compressed'];
+  if (transferable is! TransferableTypedData) {
+    throw StateError('support log encoder did not return compressed data');
+  }
   return transferable.materialize().asUint8List();
+}
+
+class _SupportLogPayloadTooLarge implements Exception {
+  const _SupportLogPayloadTooLarge();
+}
+
+void _validateSupportLogFiles(List<Map<String, String>> files) {
+  final names = <String>{};
+  final roomProfiles = <String>{};
+  final roomLogProfiles = <String>{};
+  for (final file in files) {
+    final name = (file['name'] ?? '').trim();
+    if (name.isEmpty || !names.add(name)) {
+      throw const ControlApiException('日志文件名为空或重复，请重试上传');
+    }
+    if (name.startsWith('rooms/')) {
+      final parts = name.split('/');
+      final validRoomFile =
+          parts.length == 3 &&
+          RegExp(r'^[a-f0-9]{64}$').hasMatch(parts[1]) &&
+          (parts[2] == 'p2wlan-daemon.log' ||
+              parts[2] == 'p2wlan-room.log' ||
+              parts[2] == 'status-summary.json');
+      if (!validRoomFile) {
+        throw const ControlApiException('房间日志文件名无效，请重试上传');
+      }
+      roomProfiles.add(parts[1]);
+      if (parts[2] != 'status-summary.json' && !roomLogProfiles.add(parts[1])) {
+        throw const ControlApiException('同一房间只能上传一个守护进程日志');
+      }
+    }
+  }
+  if (roomProfiles.length > maxSupportLogRoomInstances) {
+    throw ControlApiException('本次最多可上传 $maxSupportLogRoomInstances 个房间实例的日志');
+  }
+  final maxFiles = roomProfiles.isEmpty ? 3 : maxSupportLogFilesV2;
+  if (files.length > maxFiles) {
+    throw ControlApiException('本次日志文件超过协议上限 $maxFiles 个');
+  }
+}
+
+List<String> _normalizeOmittedRoomProfiles(Iterable<String> profileIds) {
+  final normalized = <String>[];
+  final seen = <String>{};
+  final profileIdPattern = RegExp(r'^[a-f0-9]{64}$');
+  for (final rawProfileId in profileIds) {
+    final profileId = rawProfileId.trim();
+    if (!profileIdPattern.hasMatch(profileId)) {
+      throw const ControlApiException('被省略房间的日志身份无效，请重试上传');
+    }
+    if (seen.add(profileId)) normalized.add(profileId);
+  }
+  if (normalized.length > maxTrackedSupportLogRoomInstances) {
+    throw const ControlApiException('本次省略的房间实例超过支持日志的记录上限');
+  }
+  return List.unmodifiable(normalized);
 }
 
 String _normalizeAuthControlServer(String value) {
@@ -466,6 +587,14 @@ String _zhAuthError(
   if (normalized.contains('invalid password')) return '密码不符合要求，至少需要 6 个字符';
   if (normalized.contains('registration failed')) return '注册失败，邮箱可能已存在';
   if (normalized.contains('rate limit')) return '请求过于频繁，请稍后再试';
+  if (normalized.contains('schema_version') ||
+      normalized.contains('schema version')) {
+    return '控制服务器不支持多房间日志格式(schema v2)，请升级服务端后再试';
+  }
+  if (normalized.contains('manifest') &&
+      normalized.contains('total_instances')) {
+    return '日志包实例清单与实际文件不一致，请重试上传';
+  }
   return raw.isEmpty ? '控制服务器请求失败' : raw;
 }
 

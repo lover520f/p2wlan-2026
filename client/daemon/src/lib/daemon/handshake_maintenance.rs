@@ -20,6 +20,7 @@ struct HandshakeMaintenanceContext {
     /// must not be the first chance to recreate a missing encrypted session.
     kick_rx: tokio::sync::watch::Receiver<u64>,
     handshake_retry_kick_tx: tokio::sync::watch::Sender<u64>,
+    timeline: Arc<ConnectionTimeline>,
 }
 
 enum MaintenanceInitiatorReservationOutcome {
@@ -106,6 +107,7 @@ async fn run_handshake_maintenance(ctx: HandshakeMaintenanceContext) {
         node_private_key,
         mut kick_rx,
         handshake_retry_kick_tx,
+        timeline,
     } = ctx;
 
     let mut tick = tokio::time::interval(Duration::from_secs(10));
@@ -496,6 +498,27 @@ async fn run_handshake_maintenance(ctx: HandshakeMaintenanceContext) {
                 );
             }
 
+            // Spawn bounded retransmission for handshake maintenance (rebuild or rekey).
+            spawn_bounded_handshake_retransmission(
+                control.clone(),
+                conn.node_id.clone(),
+                pending_id,
+                candidates.clone(),
+                candidate_sources.clone(),
+                initiation_bytes.clone(),
+                punch_at_ms,
+                session_id.clone(),
+                probe_ephemeral_public_key.clone(),
+                pending.clone(),
+                transport.clone(),
+                peers.clone(),
+                timeline.clone(),
+                reservation.cancellation.clone(),
+                handshake_generation,
+                reservation.peer_session_generation,
+                is_rekey,
+            );
+
             // Timeout cleanup runs for both successful and delivery-ambiguous
             // control requests. The short rekey timeout permits retries well
             // before the old WireGuard session reaches hard reject.
@@ -611,7 +634,7 @@ async fn refresh_candidate_cache_for_maintenance_signal(
         }
     };
 
-    peers.update_nat_profile(report.nat_profile.clone()).await;
+    let nat_publication = peers.update_nat_profile(report.nat_profile.clone()).await;
     *nat_profile.write().await = Some(report.nat_profile.clone());
 
     let (mut candidates, mut candidate_sources) = candidate_endpoints_from_report(&report);
@@ -697,7 +720,10 @@ async fn refresh_candidate_cache_for_maintenance_signal(
         drop(refresh_guard);
         let nat_type = report
             .nat_profile
-            .control_label_with_generation(peers.current_local_profile_generation_sync());
+            .control_label_with_generation_and_observation(
+                nat_publication.generation,
+                nat_publication.observation,
+            );
         if let Err(err) = control.update_endpoint(&endpoint, &nat_type).await {
             warn!("Failed to publish pre-signal UDP endpoint '{endpoint}': {err}");
         }

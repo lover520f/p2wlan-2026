@@ -341,6 +341,316 @@ void main() {
 
       final result = await uploadFuture;
       expect(result.uploadId, 'upload-1');
+      expect(result.instances, 1);
+    },
+  );
+
+  test(
+    'uploadSupportLogs v2 sends manifest and includes room instances',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      final api = ControlApi();
+      addTearDown(api.close);
+
+      final uploadFuture = api.uploadSupportLogs(
+        controlServer: 'http://127.0.0.1:${server.port}',
+        authToken: 'token-123',
+        deviceName: 'Mini',
+        clientBuild: const ClientBuildInfo(
+          appVersion: '0.1.135',
+          gitCommit: 'abc',
+          buildId: 'build',
+          dirtyValue: 'false',
+          diffHash: 'none',
+          profile: 'release',
+        ),
+        daemonBuild: null,
+        files: const [
+          SessionLogFile(name: 'p2wlan-daemon.log', content: 'daemon ok\n'),
+          SessionLogFile(
+            name: 'rooms/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/p2wlan-daemon.log',
+            content: 'room daemon ok\n',
+          ),
+        ],
+      );
+      final request = await server.first.timeout(const Duration(seconds: 3));
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/api/v1/support/logs');
+      final compressed = await request.fold<List<int>>(<int>[], (
+        buffer,
+        chunk,
+      ) {
+        buffer.addAll(chunk);
+        return buffer;
+      });
+      final payload = jsonDecode(
+        utf8.decode(GZipCodec().decode(compressed)),
+      ) as Map<String, dynamic>;
+      expect(payload['schema_version'], 2);
+      final manifest = payload['manifest'] as Map<String, dynamic>;
+      expect(manifest['has_room_logs'], true);
+      expect(manifest['total_instances'], 2);
+      final files = payload['files'] as List<dynamic>;
+      expect(files.length, 2);
+
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write('{"success":true,"upload_id":"upload-v2","instances":2}');
+      await request.response.close();
+
+      final result = await uploadFuture;
+      expect(result.uploadId, 'upload-v2');
+      expect(result.instances, 2);
+    },
+  );
+
+  test('uploadSupportLogs v2 does not inflate total_instances when multiple files exist per room', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final api = ControlApi();
+    addTearDown(api.close);
+
+    final uploadFuture = api.uploadSupportLogs(
+      controlServer: 'http://127.0.0.1:${server.port}',
+      authToken: 'token-123',
+      deviceName: 'Mini',
+      clientBuild: const ClientBuildInfo(
+        appVersion: '0.1.135',
+        gitCommit: 'abc',
+        buildId: 'build',
+        dirtyValue: 'false',
+        diffHash: 'none',
+        profile: 'release',
+      ),
+      daemonBuild: null,
+      files: const [
+        SessionLogFile(name: 'p2wlan-daemon.log', content: 'daemon ok\n'),
+        SessionLogFile(
+          name: 'rooms/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/p2wlan-daemon.log',
+          content: 'room daemon ok\n',
+        ),
+        SessionLogFile(
+          name: 'rooms/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/status-summary.json',
+          content: '{"network_id":"r1"}\n',
+        ),
+      ],
+    );
+    final request = await server.first.timeout(const Duration(seconds: 3));
+    final compressed = await request.fold<List<int>>(<int>[], (buffer, chunk) {
+      buffer.addAll(chunk);
+      return buffer;
+    });
+    final payload = jsonDecode(
+      utf8.decode(GZipCodec().decode(compressed)),
+    ) as Map<String, dynamic>;
+    expect(payload['schema_version'], 2);
+    final manifest = payload['manifest'] as Map<String, dynamic>;
+    expect(manifest['has_room_logs'], true);
+    // Main daemon (1) + room profile (1) = 2 instances, despite 3 files!
+    expect(manifest['total_instances'], 2);
+
+    request.response
+      ..headers.contentType = ContentType.json
+      ..write('{"success":true,"upload_id":"upload-v2-dedup","instances":2}');
+    await request.response.close();
+
+    final result = await uploadFuture;
+    expect(result.uploadId, 'upload-v2-dedup');
+    expect(result.instances, 2);
+  });
+
+  for (final roomCount in [5, 8]) {
+    test(
+      'uploadSupportLogs v2 sends all files for $roomCount room instances',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => server.close(force: true));
+        final api = ControlApi();
+        addTearDown(api.close);
+        final files = <SessionLogFile>[
+          const SessionLogFile(
+            name: 'p2wlan-daemon.log',
+            content: 'main daemon ok\n',
+          ),
+          const SessionLogFile(
+            name: 'p2wlan-client.log',
+            content: 'client ok\n',
+          ),
+        ];
+        for (var room = 1; room <= roomCount; room++) {
+          final profileId = room.toRadixString(16).padLeft(64, '0');
+          files.addAll([
+            SessionLogFile(
+              name: 'rooms/$profileId/p2wlan-daemon.log',
+              content: 'room $room daemon ok\n',
+            ),
+            SessionLogFile(
+              name: 'rooms/$profileId/status-summary.json',
+              content: '{"phase":"unavailable","room":$room}',
+            ),
+          ]);
+        }
+
+        final uploadFuture = api.uploadSupportLogs(
+          controlServer: 'http://127.0.0.1:${server.port}',
+          authToken: 'token-123',
+          deviceName: 'Mini',
+          clientBuild: const ClientBuildInfo(
+            appVersion: '0.1.135',
+            gitCommit: 'abc',
+            buildId: 'build',
+            dirtyValue: 'false',
+            diffHash: 'none',
+            profile: 'release',
+          ),
+          daemonBuild: null,
+          files: files,
+        );
+        final request = await server.first.timeout(const Duration(seconds: 3));
+        final compressed = await request.fold<List<int>>(<int>[], (
+          buffer,
+          chunk,
+        ) {
+          buffer.addAll(chunk);
+          return buffer;
+        });
+        final payload = jsonDecode(
+          utf8.decode(GZipCodec().decode(compressed)),
+        ) as Map<String, dynamic>;
+        expect(payload['schema_version'], 2);
+        expect(
+          (payload['files'] as List<dynamic>),
+          hasLength(2 + roomCount * 2),
+        );
+        expect(
+          (payload['manifest'] as Map<String, dynamic>)['total_instances'],
+          roomCount + 1,
+        );
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write(
+            jsonEncode({
+              'success': true,
+              'upload_id': 'upload-$roomCount-rooms',
+              'instances': roomCount + 1,
+            }),
+          );
+        await request.response.close();
+
+        final result = await uploadFuture;
+        expect(result.instances, roomCount + 1);
+      },
+    );
+  }
+
+  test('uploadSupportLogs records the room instances omitted by the bounded collector', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final api = ControlApi();
+    addTearDown(api.close);
+    final files = <SessionLogFile>[
+      const SessionLogFile(name: 'p2wlan-daemon.log', content: 'main\n'),
+      const SessionLogFile(name: 'p2wlan-client.log', content: 'client\n'),
+    ];
+    for (var room = 1; room <= 8; room++) {
+      final profileId = room.toRadixString(16).padLeft(64, '0');
+      files.addAll([
+        SessionLogFile(
+          name: 'rooms/$profileId/p2wlan-daemon.log',
+          content: 'room $room\n',
+        ),
+        SessionLogFile(
+          name: 'rooms/$profileId/status-summary.json',
+          content: '{"phase":"failed"}',
+        ),
+      ]);
+    }
+    final omittedProfileId = (9).toRadixString(16).padLeft(64, '0');
+
+    final uploadFuture = api.uploadSupportLogs(
+      controlServer: 'http://127.0.0.1:${server.port}',
+      authToken: 'token-123',
+      deviceName: 'Mini',
+      clientBuild: const ClientBuildInfo(
+        appVersion: '0.1.135',
+        gitCommit: 'abc',
+        buildId: 'build',
+        dirtyValue: 'false',
+        diffHash: 'none',
+        profile: 'release',
+      ),
+      daemonBuild: null,
+      files: files,
+      omittedRoomProfileIds: [omittedProfileId],
+    );
+    final request = await server.first.timeout(const Duration(seconds: 3));
+    final compressed = await request.fold<List<int>>(<int>[], (buffer, chunk) {
+      buffer.addAll(chunk);
+      return buffer;
+    });
+    final payload = jsonDecode(
+      utf8.decode(GZipCodec().decode(compressed)),
+    ) as Map<String, dynamic>;
+    final manifest = payload['manifest'] as Map<String, dynamic>;
+    expect(manifest['total_instances'], 9);
+    expect(manifest['retained_room_instances'], 8);
+    expect(manifest['omitted_room_instances'], 1);
+    expect(manifest['omitted_reason'], 'room_instance_budget');
+    request.response
+      ..headers.contentType = ContentType.json
+      ..write('{"success":true,"upload_id":"upload-omitted","instances":9}');
+    await request.response.close();
+
+    expect((await uploadFuture).instances, 9);
+  });
+
+  test(
+    'uploadSupportLogs translates schema v2 and manifest mismatch errors',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      final api = ControlApi();
+      addTearDown(api.close);
+
+      final uploadFuture = api.uploadSupportLogs(
+        controlServer: 'http://127.0.0.1:${server.port}',
+        authToken: 'token-123',
+        deviceName: 'Mini',
+        clientBuild: const ClientBuildInfo(
+          appVersion: '0.1.135',
+          gitCommit: 'abc',
+          buildId: 'build',
+          dirtyValue: 'false',
+          diffHash: 'none',
+          profile: 'release',
+        ),
+        daemonBuild: null,
+        files: const [
+          SessionLogFile(name: 'p2wlan-daemon.log', content: 'daemon ok\n'),
+          SessionLogFile(
+            name: 'rooms/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/p2wlan-daemon.log',
+            content: 'room daemon ok\n',
+          ),
+        ],
+      );
+      final request = await server.first.timeout(const Duration(seconds: 3));
+      request.response
+        ..statusCode = HttpStatus.badRequest
+        ..headers.contentType = ContentType.json
+        ..write('{"error":"unsupported schema_version: 2"}');
+      await request.response.close();
+
+      await expectLater(
+        uploadFuture,
+        throwsA(
+          isA<ControlApiException>().having(
+            (error) => error.message,
+            'message',
+            contains('不支持多房间日志格式'),
+          ),
+        ),
+      );
     },
   );
 

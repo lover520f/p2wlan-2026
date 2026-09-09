@@ -1,39 +1,3 @@
-/// Await an initiator offer only while its reserved pending transaction is
-/// still live.  The control runtime owns the actual HTTP request, but dropping
-/// this receiver wait on cancellation releases the bounded control-event work
-/// slot immediately instead of leaving it occupied until that request times
-/// out.
-async fn await_initiator_offer_or_cancellation<F>(
-    offer: F,
-    cancellation: &mut tokio::sync::watch::Receiver<bool>,
-) -> Option<Result<()>>
-where
-    F: std::future::Future<Output = Result<()>>,
-{
-    // A closed sender is fail-closed too: without the reservation owner we
-    // must not report an old offer as current.
-    if *cancellation.borrow() || cancellation.has_changed().is_err() {
-        return None;
-    }
-
-    tokio::select! {
-        biased;
-        changed = cancellation.changed() => {
-            let _ = changed;
-            None
-        }
-        result = offer => {
-            // If both branches become ready together, prefer cancellation;
-            // this final check also covers a sender being dropped immediately
-            // after the request completed.
-            if *cancellation.borrow() || cancellation.has_changed().is_err() {
-                None
-            } else {
-                Some(result)
-            }
-        }
-    }
-}
 
 enum EventInitiatorReservationOutcome {
     Reserved(HandshakeStartReservation),
@@ -811,7 +775,7 @@ impl Daemon {
                 &initiation_bytes,
                 Some(punch_at_ms),
                 Some(session_id.clone()),
-                Some(probe_ephemeral_public_key),
+                Some(probe_ephemeral_public_key.clone()),
             ),
             &mut reservation.cancellation,
         )
@@ -874,6 +838,30 @@ impl Daemon {
             );
         }
 
+        // Spawn bounded idempotent retransmission loop for the pending initiator handshake.
+        // It resends the exact same offer (same initiation_bytes, session_id, probe key, candidates)
+        // at bounded intervals (250ms, 500ms, 750ms, 1500ms -> cumulative 250ms, 750ms, 1.5s, 3s)
+        // until an answer is received, the session is established, or the pending owner is cancelled.
+        spawn_bounded_handshake_retransmission(
+            self.control.clone(),
+            peer_id.clone(),
+            pending_id,
+            candidates.clone(),
+            candidate_sources.clone(),
+            initiation_bytes.clone(),
+            Some(punch_at_ms),
+            session_id.clone(),
+            probe_ephemeral_public_key.clone(),
+            self.pending_handshakes.clone(),
+            self.transport.clone(),
+            self.peers.clone(),
+            self.timeline.clone(),
+            reservation.cancellation.clone(),
+            handshake_generation,
+            reservation.peer_session_generation,
+            false,
+        );
+
         // Spawn timeout watcher that cleans up only the exact pending owner.
         let pending = self.pending_handshakes.clone();
         let timeout_peer = peer_id;
@@ -882,6 +870,7 @@ impl Daemon {
         let timeout_session_id = session_id;
         let generation = handshake_generation;
         let timeout_peer_session_generation = reservation.peer_session_generation;
+        let path_setup_kick_tx = self.path_setup_kick_tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(HANDSHAKE_TIMEOUT_SECS)).await;
             // The pending transaction is the timeout's first authority.  A
@@ -907,6 +896,7 @@ impl Daemon {
             if !removed {
                 return;
             }
+            path_setup_kick_tx.send_modify(|r| *r = r.wrapping_add(1));
 
             if peers.peer_session_is_current_sync(&timeout_peer, timeout_peer_session_generation)
                 && !transport.has_session(&timeout_peer).await

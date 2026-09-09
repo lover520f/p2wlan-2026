@@ -8,7 +8,17 @@ match cmd {
                             peer_roster_tick.reset();
                             let poll_result = async {
                                 let current_http = http.current()?;
-                                poll_peers(&current_http, &base_url, &token, &config, &self_node_id, &state, event_tx).await
+                                poll_peers(
+                                    &current_http,
+                                    &base_url,
+                                    &token,
+                                    &config,
+                                    &self_node_id,
+                                    registration_seq,
+                                    &state,
+                                    event_tx,
+                                )
+                                .await
                             }
                             .await;
                             match &poll_result {
@@ -20,7 +30,12 @@ match cmd {
                                     let _ = event_tx.send(ControlEvent::ControlHealthy);
                                 }
                                 Err(err) => {
-                                    warn!("Immediate peer polling failed: {err}");
+                                    let err_str = err.to_string();
+                                    if is_registration_conflict_error(&err_str) {
+                                        emit_registration_lifecycle_conflict(health.as_ref(), event_tx, err_str).await;
+                                        return;
+                                    }
+                                    warn!("Immediate peer polling failed: {err_str}");
                                     poll_failures = poll_failures.saturating_add(1);
                                 }
                             }
@@ -36,7 +51,17 @@ match cmd {
                         ControlCommand::CreateTunnel { protocol, local_port, remote_port } => {
                             let res = async {
                                 let current_http = http.current()?;
-                                create_tunnel(&current_http, &base_url, &token, &self_node_id, &protocol, local_port, remote_port).await
+                                create_tunnel(
+                                    &current_http,
+                                    &base_url,
+                                    &token,
+                                    &self_node_id,
+                                    registration_seq,
+                                    &protocol,
+                                    local_port,
+                                    remote_port,
+                                )
+                                .await
                             }
                             .await;
                             match res {
@@ -45,6 +70,10 @@ match cmd {
                                 }
                                 Err(err) => {
                                     let err_str = err.to_string();
+                                    if is_registration_conflict_error(&err_str) {
+                                        emit_registration_lifecycle_conflict(health.as_ref(), event_tx, err_str).await;
+                                        return;
+                                    }
                                     let code = if is_permanent_auth_error(&err_str) { 401u16 } else { 3000u16 };
                                     let _ = event_tx.send(ControlEvent::ServerError { code, message: err_str });
                                     if code == 401 {
@@ -55,6 +84,10 @@ match cmd {
                         }
                         ControlCommand::UpdateEndpoint { endpoint, nat_type, response_tx } => {
                             let relay_rtt_ms = current_relay_rtt_ms(relay_selection.as_ref()).await;
+                            let published_nat_type = control_label_with_registration_seq(
+                                &nat_type,
+                                registration_seq,
+                            );
                             let res = async {
                                 let current_http = http.current()?;
                                 update_endpoint(
@@ -63,17 +96,20 @@ match cmd {
                                     &token,
                                     &self_node_id,
                                     &endpoint,
-                                    &nat_type,
+                                    &published_nat_type,
                                     relay_rtt_ms,
+                                    registration_seq,
                                 )
                                 .await
                             }
                             .await;
                             match &res {
                                 Ok(()) => {
-                                    advertised_endpoint = endpoint;
-                                    advertised_nat_type = nat_type;
-                                    debug!("Updated endpoint for {self_node_id}: {advertised_endpoint} ({advertised_nat_type})");
+                                    advertised_snapshot
+                                        .lock()
+                                        .unwrap()
+                                        .update(endpoint.clone(), published_nat_type.clone());
+                                    debug!("Updated endpoint for {self_node_id}: {endpoint} ({published_nat_type})");
                                     if let Some(health) = health.as_ref() {
                                         health.mark_device_lease_success().await;
                                     }
@@ -94,7 +130,20 @@ match cmd {
                                     }
                                 }
                             }
+                            let lifecycle_conflict = res
+                                .as_ref()
+                                .err()
+                                .is_some_and(|err| is_registration_conflict_error(&err.to_string()));
                             let _ = response_tx.send(res);
+                            if lifecycle_conflict {
+                                emit_registration_lifecycle_conflict(
+                                    health.as_ref(),
+                                    event_tx,
+                                    "endpoint update rejected by the current registration lifecycle".into(),
+                                )
+                                .await;
+                                return;
+                            }
                         }
                         ControlCommand::SendPeerReflexive { to_node_id, observed_endpoint, punch_at_ms, response_tx } => {
                             let candidates = vec![observed_endpoint.clone()];
@@ -103,7 +152,24 @@ match cmd {
                             ]);
                             let res = async {
                                 let current_http = http.current()?;
-                                send_signal(&current_http, &base_url, &token, &self_node_id, &to_node_id, "peer_reflexive", &candidates, &candidate_sources, &[], punch_at_ms, None, None, None, None).await
+                                send_signal(
+                                    &current_http,
+                                    &base_url,
+                                    &token,
+                                    registration_seq,
+                                    &self_node_id,
+                                    &to_node_id,
+                                    "peer_reflexive",
+                                    &candidates,
+                                    &candidate_sources,
+                                    &[],
+                                    punch_at_ms,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await
                             }
                             .await;
                             match &res {
@@ -120,7 +186,20 @@ match cmd {
                                     }
                                 }
                             }
+                            let lifecycle_conflict = res
+                                .as_ref()
+                                .err()
+                                .is_some_and(|err| is_registration_conflict_error(&err.to_string()));
                             let _ = response_tx.send(res);
+                            if lifecycle_conflict {
+                                emit_registration_lifecycle_conflict(
+                                    health.as_ref(),
+                                    event_tx,
+                                    "peer-reflexive signal rejected by the current registration lifecycle".into(),
+                                )
+                                .await;
+                                return;
+                            }
                         }
                         ControlCommand::DeleteTunnel { tunnel_id } => {
                             debug!("Tunnel deletion queued locally for {tunnel_id}");
@@ -128,15 +207,42 @@ match cmd {
                         ControlCommand::FetchRelayTicket { audience, region, response_tx } => {
                             let result = async {
                                 let current_http = http.current()?;
-                                fetch_relay_ticket_http(&current_http, &base_url, &token, &audience, &region).await
+                                fetch_relay_ticket_http(
+                                    &current_http,
+                                    &base_url,
+                                    &token,
+                                    registration_seq,
+                                    &audience,
+                                    &region,
+                                )
+                                .await
                             }
                             .await;
+                            let lifecycle_conflict = result
+                                .as_ref()
+                                .err()
+                                .is_some_and(|err| is_registration_conflict_error(&err.to_string()));
                             let _ = response_tx.send(result);
+                            if lifecycle_conflict {
+                                emit_registration_lifecycle_conflict(
+                                    health.as_ref(),
+                                    event_tx,
+                                    "relay ticket request rejected by the current registration lifecycle".into(),
+                                )
+                                .await;
+                                return;
+                            }
                         }
                         ControlCommand::Shutdown { response_tx } => {
                             let release_result = async {
                                 let current_http = http.current()?;
-                                release_presence(&current_http, &base_url, &token, &self_node_id)
+                                release_presence(
+                                    &current_http,
+                                    &base_url,
+                                    &token,
+                                    &self_node_id,
+                                    registration_seq,
+                                )
                                     .await
                             }
                             .await;
@@ -148,6 +254,10 @@ match cmd {
                             }
                             let _ = response_tx.send(());
                             let _ = event_tx.send(ControlEvent::Disconnected);
+                            return;
+                        }
+                        ControlCommand::LifecycleConflict { message } => {
+                            emit_registration_lifecycle_conflict(health.as_ref(), event_tx, message).await;
                             return;
                         }
                     }

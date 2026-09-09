@@ -488,10 +488,13 @@ async fn run_udp_direct_instance(
                             report.nat_profile.confidence,
                             proxy_env.label(),
                 );
-                peers.update_nat_profile(report.nat_profile.clone()).await;
+                let nat_publication = peers.update_nat_profile(report.nat_profile.clone()).await;
                 advertised_nat_type = report
                     .nat_profile
-                    .control_label_with_generation(peers.current_local_profile_generation_sync());
+                    .control_label_with_generation_and_observation(
+                        nat_publication.generation,
+                        nat_publication.observation,
+                    );
                 let pool_eligible = socket_pool_enabled
                     && report.nat_profile.mapping_behavior
                         == MappingBehavior::AddressOrPortDependent
@@ -600,13 +603,17 @@ async fn run_udp_direct_instance(
             let candidate_refresh_lock = candidate_refresh_lock.clone();
             let runtime = gateway_mapping_runtime.clone();
             let diagnostics = gateway_mapping_diagnostics.clone();
-            let mapping_publication = udp_transport_publication.clone();
             let mapping_owner = lease.owner();
+            let mapping_publication = udp_transport_publication.clone();
+            let mapping_candidate_endpoints = candidate_endpoints.clone();
+            let mapping_candidate_sources = candidate_sources.clone();
             tokio::spawn(async move {
                 let mut discovered = Vec::new();
                 let mut discovered_sources = HashMap::new();
                 maybe_add_port_mapping_udp_candidate(
                     local_addr,
+                    &mapping_candidate_endpoints,
+                    &mapping_candidate_sources,
                     &mut discovered,
                     &mut discovered_sources,
                     runtime,

@@ -19,10 +19,15 @@ import (
 )
 
 const (
-	supportLogSchemaVersion      = 1
+	supportLogSchemaVersion1     = 1
+	supportLogSchemaVersion2     = 2
 	maxSupportLogCompressedBytes = 8 << 20
 	maxSupportLogExpandedBytes   = 32 << 20
-	maxSupportLogFiles           = 3
+	maxSupportLogFilesV1         = 3
+	maxSupportLogRoomInstances   = 8
+	maxSupportLogInstancesV2     = 1 + maxSupportLogRoomInstances
+	maxSupportLogFilesV2         = 2 + (maxSupportLogRoomInstances * 2)
+	maxSupportLogOmittedRooms    = maxSupportLogRoomInstances * 2
 	defaultSupportLogRetention   = 14 * 24 * time.Hour
 )
 
@@ -33,7 +38,31 @@ type supportLogBundle struct {
 	Platform      string                 `json:"platform"`
 	ClientBuild   map[string]string      `json:"client_build,omitempty"`
 	DaemonBuild   map[string]string      `json:"daemon_build,omitempty"`
-	Files         []supportLogBundleFile `json:"files"`
+	Files         []supportLogBundleFile `json:"files,omitempty"`
+	Manifest      *supportLogManifest    `json:"manifest,omitempty"`
+	Instances     []supportLogInstance   `json:"instances,omitempty"`
+}
+
+type supportLogManifest struct {
+	TotalInstances        int      `json:"total_instances"`
+	NetworkIDs            []string `json:"network_ids,omitempty"`
+	HasRoomLogs           bool     `json:"has_room_logs"`
+	RetainedRoomInstances int      `json:"retained_room_instances,omitempty"`
+	OmittedRoomInstances  int      `json:"omitted_room_instances,omitempty"`
+	OmittedReason         string   `json:"omitted_reason,omitempty"`
+}
+
+type supportLogInstance struct {
+	InstanceType  string            `json:"instance_type"` // "main" or "room"
+	NetworkID     string            `json:"network_id,omitempty"`
+	ProfileID     string            `json:"profile_id,omitempty"`
+	BootID        string            `json:"boot_id,omitempty"`
+	Build         map[string]string `json:"build,omitempty"`
+	StartedAt     string            `json:"started_at,omitempty"`
+	EndedAt       string            `json:"ended_at,omitempty"`
+	Truncated     bool              `json:"truncated"`
+	StatusSummary string            `json:"status_summary,omitempty"`
+	Log           string            `json:"log,omitempty"`
 }
 
 type supportLogBundleFile struct {
@@ -93,7 +122,8 @@ func (s *Server) UploadSupportLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid support log JSON"}`, http.StatusBadRequest)
 		return
 	}
-	if err := validateSupportLogBundle(bundle); err != nil {
+	instanceCount, err := validateSupportLogBundle(bundle)
+	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
@@ -121,6 +151,7 @@ func (s *Server) UploadSupportLogs(w http.ResponseWriter, r *http.Request) {
 		"success":     true,
 		"upload_id":   uploadID,
 		"received_at": receivedAt.Format(time.RFC3339Nano),
+		"instances":   instanceCount,
 	})
 }
 
@@ -131,36 +162,168 @@ func supportLogDirFromEnv() string {
 	return filepath.Join("data", "log-uploads")
 }
 
-func validateSupportLogBundle(bundle supportLogBundle) error {
-	if bundle.SchemaVersion != supportLogSchemaVersion {
-		return fmt.Errorf("unsupported support log schema version")
+func isAllowedSupportLogFileName(name string, schemaVersion int) bool {
+	if name == "p2wlan-daemon.log" || name == "p2wlan-client.log" {
+		return true
+	}
+	if schemaVersion < supportLogSchemaVersion2 {
+		return false
+	}
+	if name == "p2wlan-room.log" || name == "status-summary.json" {
+		return true
+	}
+	parts := strings.Split(name, "/")
+	if len(parts) == 3 && parts[0] == "rooms" {
+		if isValidHex64(parts[1]) {
+			fileName := parts[2]
+			return fileName == "p2wlan-daemon.log" || fileName == "p2wlan-room.log" || fileName == "status-summary.json"
+		}
+	}
+	return false
+}
+
+func isValidHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < 64; i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateSupportLogBundle(bundle supportLogBundle) (int, error) {
+	if bundle.SchemaVersion != supportLogSchemaVersion1 && bundle.SchemaVersion != supportLogSchemaVersion2 {
+		return 0, fmt.Errorf("unsupported support log schema version")
 	}
 	if len(bundle.DeviceName) > 128 || len(bundle.Platform) > 64 {
-		return fmt.Errorf("support log metadata is too long")
+		return 0, fmt.Errorf("support log metadata is too long")
 	}
-	if len(bundle.Files) == 0 {
-		return fmt.Errorf("support log bundle is empty")
+	maxFiles := maxSupportLogFilesV1
+	if bundle.SchemaVersion >= supportLogSchemaVersion2 {
+		maxFiles = maxSupportLogFilesV2
 	}
-	if len(bundle.Files) > maxSupportLogFiles {
-		return fmt.Errorf("support log bundle contains too many files")
+	if len(bundle.Files) == 0 && len(bundle.Instances) == 0 {
+		return 0, fmt.Errorf("support log bundle is empty")
+	}
+	if len(bundle.Files) > maxFiles {
+		return 0, fmt.Errorf("support log bundle contains too many files")
+	}
+	maxInstances := maxSupportLogFilesV1
+	if bundle.SchemaVersion >= supportLogSchemaVersion2 {
+		maxInstances = maxSupportLogInstancesV2
+	}
+	if len(bundle.Instances) > maxInstances {
+		return 0, fmt.Errorf("support log bundle contains too many instances")
 	}
 	seen := make(map[string]struct{}, len(bundle.Files))
+	roomProfiles := make(map[string]struct{})
+	roomLogFiles := make(map[string]struct{})
+	hasLegacyRoomFiles := false
 	for _, file := range bundle.Files {
-		if file.Name != "p2wlan-daemon.log" && file.Name != "p2wlan-client.log" {
-			return fmt.Errorf("unsupported support log file: %s", file.Name)
+		if !isAllowedSupportLogFileName(file.Name, bundle.SchemaVersion) {
+			return 0, fmt.Errorf("unsupported support log file: %s", file.Name)
 		}
 		if _, ok := seen[file.Name]; ok {
-			return fmt.Errorf("duplicate support log file: %s", file.Name)
+			return 0, fmt.Errorf("duplicate support log file: %s", file.Name)
 		}
 		seen[file.Name] = struct{}{}
 		if len(file.Content) == 0 {
-			return fmt.Errorf("support log file is empty: %s", file.Name)
+			return 0, fmt.Errorf("support log file is empty: %s", file.Name)
 		}
 		if len(file.Content) > maxSupportLogExpandedBytes {
-			return fmt.Errorf("support log file is too large: %s", file.Name)
+			return 0, fmt.Errorf("support log file is too large: %s", file.Name)
+		}
+		if profileID, fileName, ok := supportLogRoomFileName(file.Name); ok {
+			roomProfiles[profileID] = struct{}{}
+			if fileName != "status-summary.json" {
+				if _, exists := roomLogFiles[profileID]; exists {
+					return 0, fmt.Errorf("multiple room log files for profile_id: %s", profileID)
+				}
+				roomLogFiles[profileID] = struct{}{}
+			}
+		} else if file.Name == "p2wlan-room.log" || file.Name == "status-summary.json" {
+			hasLegacyRoomFiles = true
 		}
 	}
-	return nil
+	if len(roomProfiles) > maxSupportLogRoomInstances {
+		return 0, fmt.Errorf("support log bundle contains too many room instances")
+	}
+	if hasLegacyRoomFiles && len(roomProfiles) >= maxSupportLogRoomInstances {
+		return 0, fmt.Errorf("support log bundle contains too many room instances")
+	}
+
+	instanceCount := 1 + len(roomProfiles)
+	if hasLegacyRoomFiles {
+		instanceCount++
+	}
+	if len(bundle.Files) == 0 {
+		instanceCount = len(bundle.Instances)
+	}
+	instanceProfiles := make(map[string]struct{})
+	for _, inst := range bundle.Instances {
+		if inst.InstanceType != "main" && inst.InstanceType != "room" {
+			return 0, fmt.Errorf("invalid instance_type: %s", inst.InstanceType)
+		}
+		if inst.ProfileID != "" && !isValidHex64(inst.ProfileID) {
+			return 0, fmt.Errorf("invalid profile_id: %s", inst.ProfileID)
+		}
+		if inst.InstanceType == "room" && inst.ProfileID != "" {
+			if _, ok := instanceProfiles[inst.ProfileID]; ok {
+				return 0, fmt.Errorf("duplicate room instance profile_id: %s", inst.ProfileID)
+			}
+			instanceProfiles[inst.ProfileID] = struct{}{}
+		}
+		if len(inst.Log) > maxSupportLogExpandedBytes {
+			return 0, fmt.Errorf("instance log is too large")
+		}
+		if len(inst.StatusSummary) > maxSupportLogExpandedBytes {
+			return 0, fmt.Errorf("instance status summary is too large")
+		}
+	}
+	if len(bundle.Files) > 0 && len(bundle.Instances) > 0 && len(bundle.Instances) != instanceCount {
+		return 0, fmt.Errorf("support log instances do not match file instance count")
+	}
+	if bundle.Manifest != nil {
+		if bundle.Manifest.TotalInstances <= 0 || bundle.Manifest.TotalInstances > maxInstances {
+			return 0, fmt.Errorf("invalid manifest total_instances")
+		}
+		if bundle.Manifest.TotalInstances != instanceCount {
+			return 0, fmt.Errorf("manifest total_instances (%d) does not match instance count (%d)", bundle.Manifest.TotalInstances, instanceCount)
+		}
+		retainedRoomInstances := len(roomProfiles)
+		if hasLegacyRoomFiles {
+			retainedRoomInstances++
+		}
+		if bundle.Manifest.RetainedRoomInstances != 0 && bundle.Manifest.RetainedRoomInstances != retainedRoomInstances {
+			return 0, fmt.Errorf("manifest retained_room_instances does not match file room count")
+		}
+		if bundle.Manifest.OmittedRoomInstances < 0 || bundle.Manifest.OmittedRoomInstances > maxSupportLogOmittedRooms {
+			return 0, fmt.Errorf("invalid manifest omitted_room_instances")
+		}
+		if bundle.Manifest.OmittedRoomInstances == 0 && bundle.Manifest.OmittedReason != "" {
+			return 0, fmt.Errorf("manifest omitted_reason requires omitted_room_instances")
+		}
+		if bundle.Manifest.OmittedRoomInstances > 0 && bundle.Manifest.OmittedReason != "room_instance_budget" {
+			return 0, fmt.Errorf("invalid manifest omitted_reason")
+		}
+		hasRoomLogs := retainedRoomInstances > 0
+		if bundle.Manifest.HasRoomLogs != hasRoomLogs {
+			return 0, fmt.Errorf("manifest has_room_logs does not match instance count")
+		}
+	}
+	return instanceCount, nil
+}
+
+func supportLogRoomFileName(name string) (string, string, bool) {
+	parts := strings.Split(name, "/")
+	if len(parts) != 3 || parts[0] != "rooms" || !isValidHex64(parts[1]) {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
 }
 
 func newSupportLogUploadID() (string, error) {

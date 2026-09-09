@@ -8,6 +8,24 @@ type NetworkGenerationHandshakeCancelHook =
 type NetworkGenerationHandshakeCancelHookSlot =
     Arc<std::sync::Mutex<Option<NetworkGenerationHandshakeCancelHook>>>;
 
+/// The immutable version assigned to one local NAT gather result.
+///
+/// `generation` changes only when traversal-relevant capabilities change.
+/// `observation` changes only after this invocation contains a successful
+/// live STUN observation. Keeping the two axes separate avoids both stale
+/// profile expiry and RTT-jitter-driven session teardown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NatProfilePublication {
+    /// Traversal-capability generation (`g=`).
+    pub generation: u64,
+    /// Real live-observation sequence (`o=`), absent when this gather did not
+    /// obtain a server-reflexive result.
+    pub observation: Option<u64>,
+    /// Whether this gather supplied a new `o=` value rather than replaying a
+    /// cached control-plane label.
+    pub observation_advanced: bool,
+}
+
 /// The local, non-wire identity fence for one Hard↔Hard rendezvous.
 ///
 /// The session id alone is not sufficient: a late response from an older
@@ -491,6 +509,17 @@ pub struct PeerManager {
     /// separate domain from the local network generation: a profile refresh
     /// can invalidate a Hard↔Hard session without implying a link handover.
     local_profile_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// Monotonic sequence of successful *live* STUN observations for the
+    /// current daemon registration. Unlike `local_profile_generation`, this
+    /// advances when a stable NAT profile is re-observed and is carried as
+    /// `o=` in the control label so peers can renew freshness without treating
+    /// heartbeat replays as new network evidence.
+    local_profile_observation: Arc<std::sync::atomic::AtomicU64>,
+    /// Observation sequence bound to the currently committed local profile.
+    /// Zero means the current profile came from a gather with no successful
+    /// STUN response, so publications must omit `o=` rather than reuse an old
+    /// successful observation from a different profile snapshot.
+    local_profile_current_observation: Arc<std::sync::atomic::AtomicU64>,
     /// Directly-connected local interface prefixes used by the Host fast lane.
     local_interface_networks: Arc<RwLock<Vec<LocalNetwork>>>,
     /// Anonymous local traversal outcome history.

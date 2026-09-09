@@ -317,14 +317,88 @@ impl PeerConnection {
     ) -> bool {
         let hint = parse_nat_hint(nat_type);
         let incoming_generation = hint.profile_generation;
+        let incoming_lifecycle = hint.registration_lifecycle;
+        let incoming_observation = hint.observation_sequence;
         let current_generation = self
             .remote_nat_profile
             .as_ref()
             .and_then(|profile| profile.generation);
-        let accepts = match (current_generation, incoming_generation) {
-            (Some(current), Some(incoming)) => incoming >= current,
+        let current_lifecycle = self
+            .remote_nat_profile
+            .as_ref()
+            .and_then(|profile| profile.registration_lifecycle);
+        let current_observation = self
+            .remote_nat_profile
+            .as_ref()
+            .and_then(|profile| profile.observation_sequence);
+        let stable_endpoint = stable_endpoint.filter(|endpoint| is_public_probe_endpoint(*endpoint));
+        let new_capabilities = NatCapabilities::from_fingerprint_hint(&hint, stable_endpoint);
+        // A server-issued registration lifecycle is the outermost ordering
+        // fence. A daemon restart may legitimately restart local `g` and `o`
+        // at low values, but an in-flight PATCH from the old registration must
+        // never replace the new profile. Once we have seen a lifecycle, a
+        // label that omits it cannot downgrade that protection.
+        let lifecycle_advanced = match (current_lifecycle, incoming_lifecycle) {
+            (Some(current), Some(incoming)) if incoming < current => {
+                debug!(
+                    peer = %self.node_id,
+                    current_lifecycle,
+                    incoming_lifecycle,
+                    "ignored stale remote NAT registration lifecycle"
+                );
+                return false;
+            }
+            (Some(_), None) => {
+                debug!(
+                    peer = %self.node_id,
+                    current_lifecycle,
+                    "ignored remote NAT label without the current registration lifecycle"
+                );
+                return false;
+            }
+            (Some(current), Some(incoming)) => incoming > current,
+            (None, _) => false,
+        };
+
+        let accepts = if lifecycle_advanced {
+            true
+        } else {
+            match (current_generation, incoming_generation) {
+            (Some(current), Some(incoming)) => {
+                if incoming < current {
+                    false
+                } else if incoming == current {
+                    if let Some(existing) = self.remote_nat_profile.as_ref() {
+                        let cur_m = existing.capabilities.mapping_behavior;
+                        let inc_m = new_capabilities.mapping_behavior;
+                        if cur_m != MappingBehavior::Unknown
+                            && inc_m != MappingBehavior::Unknown
+                            && cur_m != inc_m
+                        {
+                            return false;
+                        }
+                        let cur_f = existing.capabilities.filtering_behavior;
+                        let inc_f = new_capabilities.filtering_behavior;
+                        if cur_f != FilteringBehavior::Unknown
+                            && inc_f != FilteringBehavior::Unknown
+                            && cur_f != inc_f
+                        {
+                            return false;
+                        }
+                        let cur_a = &existing.capabilities.allocation_model;
+                        let inc_a = &new_capabilities.allocation_model;
+                        if cur_a.is_some() && inc_a.is_some() && cur_a != inc_a {
+                            return false;
+                        }
+                    }
+                    true
+                } else {
+                    true
+                }
+            }
             (Some(_), None) => false,
             (None, _) => true,
+            }
         };
         if !accepts {
             debug!(
@@ -335,17 +409,68 @@ impl PeerConnection {
             );
             return false;
         }
-        let stable_endpoint = stable_endpoint.filter(|endpoint| is_public_probe_endpoint(*endpoint));
+
+        // `o` is emitted only after a real successful STUN observation. It
+        // therefore renews the remote evidence age at a stable capability,
+        // while a heartbeat that replays the same cached label preserves the
+        // old age. The same-generation ordering is deliberate: a new `g` (or
+        // a new registration lifecycle) already represents a new capability
+        // snapshot and starts a fresh observation epoch.
+        let observation_advanced = !lifecycle_advanced
+            && current_generation == incoming_generation
+            && match (current_observation, incoming_observation) {
+                (Some(current), Some(incoming)) if incoming < current => {
+                    debug!(
+                        peer = %self.node_id,
+                        current_observation,
+                        incoming_observation,
+                        "ignored stale remote NAT observation"
+                    );
+                    return false;
+                }
+                (Some(_), None) => {
+                    debug!(
+                        peer = %self.node_id,
+                        current_observation,
+                        "ignored remote NAT label without the current observation fence"
+                    );
+                    return false;
+                }
+                (Some(current), Some(incoming)) => incoming > current,
+                (None, Some(_)) => true,
+                (None, None) => false,
+            };
+        let received_at_ms = if let Some(existing) = self.remote_nat_profile.as_ref() {
+            if !lifecycle_advanced
+                && !observation_advanced
+                && existing.generation == incoming_generation
+                && existing.capabilities.mapping_behavior == new_capabilities.mapping_behavior
+                && existing.capabilities.filtering_behavior == new_capabilities.filtering_behavior
+                && existing.capabilities.allocation_model == new_capabilities.allocation_model
+            {
+                // Identical capability at same generation (e.g. heartbeat republishing cached NAT):
+                // Retain existing observation timestamp to avoid infinite pseudo-freshness.
+                existing.received_at_ms
+            } else {
+                nat_profile_now_ms()
+            }
+        } else {
+            nat_profile_now_ms()
+        };
         self.remote_nat_profile = Some(RemoteNatProfile {
-            capabilities: NatCapabilities::from_fingerprint_hint(&hint, stable_endpoint),
+            capabilities: new_capabilities,
             generation: incoming_generation,
-            received_at_ms: nat_profile_now_ms(),
+            registration_lifecycle: incoming_lifecycle,
+            observation_sequence: incoming_observation,
+            received_at_ms,
         });
         self.remote_nat_profile_candidate_epoch = Some(self.remote_candidate_epoch);
         debug!(
             event = "remote_nat_profile_updated",
             peer = %self.node_id,
+            remote_registration_lifecycle = ?incoming_lifecycle,
             remote_profile_generation = ?incoming_generation,
+            remote_observation_sequence = ?incoming_observation,
             mapping_behavior = ?hint.mapping,
             filtering_behavior = ?hint.filtering,
             prediction_confidence = ?hint.confidence,

@@ -85,6 +85,35 @@ fn is_permanent_auth_error(err: &str) -> bool {
         || err.contains("permanent auth")
 }
 
+/// Registration lifecycle conflicts are a fencing signal, not a transient
+/// transport failure. In particular, a stale process must never turn a 409
+/// into a fresh registration by manufacturing a larger incarnation.
+fn is_registration_conflict_error(err: &str) -> bool {
+    err.contains("registration conflict (registration_conflict)")
+        || err.contains("registration conflict (registration_protocol_upgrade_required)")
+        || err.contains("registration conflict (registration_incarnation_mismatch)")
+        || err.contains("registration conflict (registration_lifecycle_conflict)")
+}
+
+/// A lifecycle conflict means another daemon incarnation now owns this device
+/// credential.  It is not recoverable inside this process: re-registering a
+/// stale incarnation would either fail again or, on a partially upgraded
+/// server, risk taking ownership back from the newer daemon.
+async fn emit_registration_lifecycle_conflict(
+    health: Option<&Arc<crate::tasks::HealthState>>,
+    event_tx: &mpsc::UnboundedSender<ControlEvent>,
+    message: String,
+) {
+    error!("Control registration lifecycle conflict — restart required: {message}");
+    if let Some(health) = health {
+        health.set_control_connected(false);
+        health.set_device_lease_healthy(false);
+        health.set_reauth_required(true);
+    }
+    let _ = event_tx.send(ControlEvent::ReauthRequired { message });
+    let _ = event_tx.send(ControlEvent::Disconnected);
+}
+
 async fn current_relay_rtt_ms(
     relay_selection: Option<&Arc<RwLock<RelaySelectionDiagnostics>>>,
 ) -> Option<u64> {

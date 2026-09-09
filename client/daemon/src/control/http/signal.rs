@@ -3,6 +3,7 @@ pub(super) async fn send_signal(
     http: &reqwest::Client,
     base_url: &str,
     token: &str,
+    registration_seq: Option<u64>,
     from_node_id: &str,
     to_node_id: &str,
     signal_type: &str,
@@ -28,7 +29,7 @@ pub(super) async fn send_signal(
         probe_ephemeral_public_key,
         signing_identity,
     )?;
-    send_prepared_signal(http, base_url, token, &payload).await
+    send_prepared_signal(http, base_url, token, registration_seq, &payload).await
 }
 
 /// Build one immutable signal body.
@@ -104,21 +105,28 @@ pub(super) async fn send_prepared_signal(
     http: &reqwest::Client,
     base_url: &str,
     token: &str,
+    registration_seq: Option<u64>,
     payload: &serde_json::Value,
 ) -> Result<()> {
-    let res = http
-        .post(format!("{base_url}/api/v1/signals"))
-        .timeout(SIGNAL_SEND_TIMEOUT)
-        .bearer_auth(token)
-        .json(payload)
+    let res = with_registration_sequence(
+        http.post(format!("{base_url}/api/v1/signals"))
+            .timeout(SIGNAL_SEND_TIMEOUT)
+            .bearer_auth(token)
+            .json(payload),
+        registration_seq,
+    )
         .send()
         .await
         .map_err(|e| DaemonError::ControlPlane(format!("send signal request failed: {e}")))?;
 
     if !res.status().is_success() {
+        let status = res.status();
+        let (detail, error_code, current_seq) = control_error_detail(res).await;
+        if let Some(error) = registration_conflict_error(status, error_code, current_seq, &detail) {
+            return Err(error);
+        }
         return Err(DaemonError::ControlPlane(format!(
-            "send signal returned HTTP {}",
-            res.status()
+            "send signal returned HTTP {status}: {detail}",
         )));
     }
 
@@ -169,11 +177,13 @@ pub(super) async fn send_prepared_signal(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn poll_signals(
     http: &reqwest::Client,
     base_url: &str,
     token: &str,
     self_node_id: &str,
+    registration_seq: Option<u64>,
     event_tx: &mpsc::UnboundedSender<ControlEvent>,
     wait_ms: u64,
     delivery_tracker: &Arc<tokio::sync::Mutex<SignalDeliveryTracker>>,
@@ -184,20 +194,26 @@ pub(super) async fn poll_signals(
     // expires and the batch is redelivered.  An old server ignores the query
     // parameter and keeps its delete-on-GET contract, which is exactly what
     // an old client expects (no infinite redelivery either way).
-    let res = http
-        .get(format!(
+    let res = with_registration_sequence(
+        http.get(format!(
             "{base_url}/api/v1/signals?node_id={self_node_id}&wait_ms={wait_ms}&ack=1"
         ))
         .timeout(signal_poll_timeout(wait_ms))
-        .bearer_auth(token)
+        .bearer_auth(token),
+        registration_seq,
+    )
         .send()
         .await
         .map_err(|e| DaemonError::ControlPlane(format!("list signals request failed: {e}")))?;
 
     if !res.status().is_success() {
+        let status = res.status();
+        let (detail, error_code, current_seq) = control_error_detail(res).await;
+        if let Some(error) = registration_conflict_error(status, error_code, current_seq, &detail) {
+            return Err(error);
+        }
         return Err(DaemonError::ControlPlane(format!(
-            "list signals returned HTTP {}",
-            res.status()
+            "list signals returned HTTP {status}: {detail}",
         )));
     }
 
@@ -432,6 +448,7 @@ pub(super) async fn poll_signals(
             base_url.to_string(),
             token.to_string(),
             self_node_id.to_string(),
+            registration_seq,
             event_tx.clone(),
             delivery_tracker.clone(),
             deliveries,
@@ -553,11 +570,13 @@ struct LeasedSignalDelivery {
 /// time: if an ACK is ambiguous, later rows stay unacknowledged and the
 /// server's per-pair head-of-line lease will replay from the first uncertain
 /// commit instead of allowing a newer handshake to overtake it.
+#[allow(clippy::too_many_arguments)]
 fn spawn_signal_application_lane(
     http: reqwest::Client,
     base_url: String,
     token: String,
     self_node_id: String,
+    registration_seq: Option<u64>,
     event_tx: mpsc::UnboundedSender<ControlEvent>,
     delivery_tracker: Arc<tokio::sync::Mutex<SignalDeliveryTracker>>,
     deliveries: Vec<LeasedSignalDelivery>,
@@ -657,6 +676,7 @@ fn spawn_signal_application_lane(
                 &base_url,
                 &token,
                 &self_node_id,
+                registration_seq,
                 std::slice::from_ref(&delivery.ack),
             )
             .await
@@ -684,20 +704,27 @@ async fn ack_signals(
     base_url: &str,
     token: &str,
     self_node_id: &str,
+    registration_seq: Option<u64>,
     acks: &[SignalAckRequest],
 ) -> Result<()> {
-    let res = http
-        .post(format!("{base_url}/api/v1/signals/ack?node_id={self_node_id}"))
-        .timeout(SIGNAL_SEND_TIMEOUT)
-        .bearer_auth(token)
-        .json(&serde_json::json!({ "signals": acks }))
+    let res = with_registration_sequence(
+        http.post(format!("{base_url}/api/v1/signals/ack?node_id={self_node_id}"))
+            .timeout(SIGNAL_SEND_TIMEOUT)
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "signals": acks })),
+        registration_seq,
+    )
         .send()
         .await
         .map_err(|e| DaemonError::ControlPlane(format!("signal ack request failed: {e}")))?;
     if !res.status().is_success() {
+        let status = res.status();
+        let (detail, error_code, current_seq) = control_error_detail(res).await;
+        if let Some(error) = registration_conflict_error(status, error_code, current_seq, &detail) {
+            return Err(error);
+        }
         return Err(DaemonError::ControlPlane(format!(
-            "signal ack returned HTTP {}",
-            res.status()
+            "signal ack returned HTTP {status}: {detail}",
         )));
     }
     Ok(())

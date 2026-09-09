@@ -1295,6 +1295,465 @@ async fn stale_sender_identity_fresh_signal_never_enters_new_high_water() {
 }
 
 #[tokio::test]
+async fn offline_peer_first_offer_deferred_and_not_rejected_as_stale_identity() {
+    let config = Config::generate_default("http://127.0.0.1:1", "net1").unwrap();
+    let daemon = Daemon::new(config);
+    // Peer is initially added as offline (online: false)
+    daemon
+        .peers
+        .add_peer(&control::PeerInfo {
+            node_id: "node-offline".to_string(),
+            device_name: String::new(),
+            app_version: String::new(),
+            public_key: "offline-peer-key".to_string(),
+            endpoint: "203.0.113.20:51820".to_string(),
+            nat_type: "Unknown".to_string(),
+            virtual_ip: "10.20.0.5".to_string(),
+            online: false,
+            last_seen: 0,
+            relay_rtt_ms: None,
+        })
+        .await;
+
+    let control = daemon.control.clone();
+    let peers = daemon.peers.clone();
+    let timeline = daemon.timeline.clone();
+    let (net_tx, _net_rx) = mpsc::channel(64);
+    let mut relay_started = false;
+    let mut daemon_task = daemon;
+    let handle = tokio::spawn(async move {
+        daemon_task
+            .run_control_event_loop(&mut relay_started, net_tx)
+            .await;
+    });
+
+    // Send an offer from this known-offline peer with matching key
+    control
+        .event_sender()
+        .send(ControlEvent::PeerOffer {
+            from_node_id: "node-offline".to_string(),
+            candidates: vec!["203.0.113.20:51820".to_string()],
+            session_id: None,
+            probe_ephemeral_public_key: None,
+            candidate_sources: HashMap::new(),
+            candidate_generation: 1,
+            candidates_expires_at_ms: None,
+            handshake_init: Vec::new(),
+            punch_at_ms: None,
+            punch_at_server_ms: None,
+            sender_public_key: Some("offline-peer-key".to_string()),
+        })
+        .unwrap();
+
+    // Verify it is deferred with peer_lifecycle_pending rather than rejected as stale_sender_identity
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let snap = timeline.snapshot();
+            if snap.events.iter().any(|e| {
+                e.event == "remote_signal_deferred"
+                    && e.reason_code.as_deref() == Some("peer_lifecycle_pending")
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("offer from offline peer must be deferred with peer_lifecycle_pending");
+
+    // Ensure it was NOT rejected as stale_sender_identity
+    let conn = peers.get_connection("node-offline").await.unwrap();
+    assert!(
+        !conn
+            .direct_events
+            .iter()
+            .any(|e| e.stage == "remote_signal_stale_identity"),
+        "offer from offline peer must NOT be marked as remote_signal_stale_identity"
+    );
+
+    let snap = timeline.snapshot();
+    assert!(
+        !snap.events.iter().any(|e| {
+            e.event == "remote_signal_rejected"
+                && e.reason_code.as_deref() == Some("stale_sender_identity")
+        }),
+        "offer from offline peer must NOT be rejected with stale_sender_identity"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn initiator_handshake_bounded_retransmission_fires_and_stops_on_answer() {
+    let mut control_capture = start_handshake_control_capture().await;
+    let mut config =
+        Config::generate_default(&control_capture.base_url, "retransmit-network").unwrap();
+    config.control.auth_token = "retransmit-token".to_string();
+    config.node.node_id = "node-local".to_string();
+    let daemon = Arc::new(Daemon::new(config));
+    timeout(Duration::from_secs(2), control_capture.wait_registered())
+        .await
+        .expect("daemon registration must succeed");
+    daemon.relay_available_tx.send_replace(true);
+
+    let local_public = daemon.local_identity().unwrap().public_key();
+    let peer_identity = loop {
+        let identity = NodeIdentity::generate();
+        if local_public < identity.public_key() {
+            break identity;
+        }
+    };
+    let peer_info = control::PeerInfo {
+        node_id: "node-retransmit".to_string(),
+        device_name: String::new(),
+        app_version: String::new(),
+        public_key: hex::encode(peer_identity.public_key()),
+        endpoint: "203.0.113.30:51820".to_string(),
+        nat_type: "Unknown".to_string(),
+        virtual_ip: "10.20.0.6".to_string(),
+        online: true,
+        last_seen: 0,
+        relay_rtt_ms: None,
+    };
+    daemon.peers.add_peer(&peer_info).await;
+    let timeline = daemon.timeline.clone();
+    let mut reservation = daemon
+        .reserve_event_initiator_handshake(&peer_info.node_id)
+        .expect("initiator reservation must be admitted");
+
+    let punch_at = daemon
+        .run_reserved_initiator_handshake(&peer_info, &mut reservation)
+        .await
+        .expect("initial handshake send should proceed");
+    assert!(punch_at.is_some(), "designated initiator must send initial offer");
+
+    // Retransmission task is spawned with first interval 250ms.
+    // Wait for the retransmission event to be emitted on the timeline.
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let snap = timeline.snapshot();
+            if snap
+                .events
+                .iter()
+                .any(|e| e.event == "initiator_offer_retransmitted")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("bounded retransmission must fire within interval");
+
+    // An answer is returned from the peer's responder and delivered to daemon.
+    let bodies = control_capture.signal_bodies();
+    let offers = bodies
+        .iter()
+        .filter_map(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+        .filter(|body| body.get("type").and_then(serde_json::Value::as_str) == Some("peer_offer"))
+        .collect::<Vec<_>>();
+    assert!(!offers.is_empty(), "must have captured at least one offer");
+    let offer = &offers[0];
+    let initiation_hex = offer
+        .get("handshake")
+        .and_then(serde_json::Value::as_str)
+        .expect("Offer must have handshake initiation");
+    let session_id = offer
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("Offer must have session id")
+        .to_string();
+    let initiation_bytes = hex::decode(initiation_hex).unwrap();
+    let initiation = MessageInitiation::from_bytes(&initiation_bytes).unwrap();
+    let mut remote_responder = HandshakeResponder::new(peer_identity, None);
+    let (response, _) = remote_responder
+        .consume_initiation_and_respond(&initiation)
+        .unwrap();
+    let remote_probe_public = hex::encode(DhKeyPair::generate().public_key());
+
+    // Deliver actual Answer and confirm session is established
+    let accepted = daemon
+        .handle_peer_answer(
+            &peer_info.node_id,
+            &response.to_bytes(),
+            Some(session_id),
+            Some(remote_probe_public),
+        )
+        .await
+        .unwrap();
+    assert!(accepted, "real Answer must be accepted");
+    assert!(
+        daemon.transport.has_session(&peer_info.node_id).await,
+        "WireGuard session must be installed"
+    );
+
+    // Wait a moment and check that retransmission count stops increasing
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let count_after_answer = timeline
+        .snapshot()
+        .events
+        .iter()
+        .filter(|e| e.event == "initiator_offer_retransmitted")
+        .count();
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let count_later = timeline
+        .snapshot()
+        .events
+        .iter()
+        .filter(|e| e.event == "initiator_offer_retransmitted")
+        .count();
+
+    assert_eq!(
+        count_after_answer, count_later,
+        "retransmission must stop after actual answer establishes session"
+    );
+}
+
+#[tokio::test]
+async fn maintenance_rebuild_handshake_bounded_retransmission_fires_and_stops_on_answer() {
+    let mut control_capture = start_handshake_control_capture().await;
+    let mut config =
+        Config::generate_default(&control_capture.base_url, "maintenance-rebuild-net").unwrap();
+    config.control.auth_token = "maintenance-rebuild-token".to_string();
+    config.node.node_id = "node-local".to_string();
+    let daemon = Arc::new(Daemon::new(config));
+    timeout(Duration::from_secs(2), control_capture.wait_registered())
+        .await
+        .expect("daemon registration must succeed");
+    daemon.relay_available_tx.send_replace(true);
+
+    let local_public = daemon.local_identity().unwrap().public_key();
+    let peer_identity = loop {
+        let identity = NodeIdentity::generate();
+        if local_public < identity.public_key() {
+            break identity;
+        }
+    };
+    let peer_info = control::PeerInfo {
+        node_id: "node-rebuild".to_string(),
+        device_name: String::new(),
+        app_version: String::new(),
+        public_key: hex::encode(peer_identity.public_key()),
+        endpoint: "203.0.113.31:51820".to_string(),
+        nat_type: "Unknown".to_string(),
+        virtual_ip: "10.20.0.7".to_string(),
+        online: true,
+        last_seen: 0,
+        relay_rtt_ms: None,
+    };
+    daemon.peers.add_peer(&peer_info).await;
+    daemon.control.set_peer_for_test(peer_info.clone()).await;
+    let timeline = daemon.timeline.clone();
+
+    // Spawn maintenance task directly with kick channel
+    let (kick_tx, kick_rx) = tokio::sync::watch::channel(1u64);
+    let ctx = HandshakeMaintenanceContext {
+        peers: daemon.peers.clone(),
+        transport: daemon.transport.clone(),
+        pending: daemon.pending_handshakes.clone(),
+        handshake_arbiter: daemon.handshake_arbiter.clone(),
+        control: daemon.control.clone(),
+        local_candidates: daemon.local_candidates.clone(),
+        local_candidate_sources: daemon.local_candidate_sources.clone(),
+        local_network_identity: daemon.local_network_identity.clone(),
+        candidate_snapshot: daemon.candidate_snapshot.clone(),
+        candidate_refresh_lock: daemon.candidate_refresh_lock.clone(),
+        nat_profile: daemon.nat_profile.clone(),
+        udp_transport: daemon.udp_transport.clone(),
+        runtime_stun_servers: daemon.runtime_stun_servers.clone(),
+        runtime_stun_timeout: daemon.runtime_stun_timeout.clone(),
+        udp_advertise: None,
+        node_private_key: daemon.config.node.private_key.clone(),
+        kick_rx,
+        handshake_retry_kick_tx: daemon.handshake_retry_kick_tx.clone(),
+        timeline: daemon.timeline.clone(),
+    };
+    let maintenance_task = tokio::spawn(run_handshake_maintenance(ctx));
+
+    // Wake maintenance to initiate rebuild
+    kick_tx.send_replace(2);
+
+    // Verify bounded retransmission fires for maintenance initiator
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let snap = timeline.snapshot();
+            if snap
+                .events
+                .iter()
+                .any(|e| e.event == "initiator_offer_retransmitted")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("maintenance rebuild must spawn bounded retransmission");
+
+    // Deliver actual Answer
+    let bodies = control_capture.signal_bodies();
+    let offers = bodies
+        .iter()
+        .filter_map(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+        .filter(|body| body.get("type").and_then(serde_json::Value::as_str) == Some("peer_offer"))
+        .collect::<Vec<_>>();
+    assert!(!offers.is_empty(), "must capture maintenance offer");
+    let offer = &offers[0];
+    let initiation_hex = offer
+        .get("handshake")
+        .and_then(serde_json::Value::as_str)
+        .expect("Offer must have handshake initiation");
+    let session_id = offer
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("Offer must have session id")
+        .to_string();
+    let initiation_bytes = hex::decode(initiation_hex).unwrap();
+    let initiation = MessageInitiation::from_bytes(&initiation_bytes).unwrap();
+    let mut remote_responder = HandshakeResponder::new(peer_identity, None);
+    let (response, _) = remote_responder
+        .consume_initiation_and_respond(&initiation)
+        .unwrap();
+    let remote_probe_public = hex::encode(DhKeyPair::generate().public_key());
+
+    let accepted = daemon
+        .handle_peer_answer(
+            &peer_info.node_id,
+            &response.to_bytes(),
+            Some(session_id),
+            Some(remote_probe_public),
+        )
+        .await
+        .unwrap();
+    assert!(accepted, "real answer must be accepted for rebuild");
+    assert!(daemon.transport.has_session(&peer_info.node_id).await);
+
+    // Verify retransmission stops once answer establishes the session
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let count_after_answer = timeline
+        .snapshot()
+        .events
+        .iter()
+        .filter(|e| e.event == "initiator_offer_retransmitted")
+        .count();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let count_later = timeline
+        .snapshot()
+        .events
+        .iter()
+        .filter(|e| e.event == "initiator_offer_retransmitted")
+        .count();
+    assert_eq!(count_after_answer, count_later, "retransmission must stop once rebuild session is established");
+
+    maintenance_task.abort();
+}
+
+#[tokio::test]
+async fn maintenance_rekey_handshake_bounded_retransmission_survives_existing_session() {
+    let mut control_capture = start_handshake_control_capture().await;
+    let mut config =
+        Config::generate_default(&control_capture.base_url, "maintenance-rekey-net").unwrap();
+    config.control.auth_token = "maintenance-rekey-token".to_string();
+    config.node.node_id = "node-local".to_string();
+    let daemon = Arc::new(Daemon::new(config));
+    timeout(Duration::from_secs(2), control_capture.wait_registered())
+        .await
+        .expect("daemon registration must succeed");
+    daemon.relay_available_tx.send_replace(true);
+
+    let local_public = daemon.local_identity().unwrap().public_key();
+    let peer_identity = loop {
+        let identity = NodeIdentity::generate();
+        if local_public < identity.public_key() {
+            break identity;
+        }
+    };
+    let peer_info = control::PeerInfo {
+        node_id: "node-rekey".to_string(),
+        device_name: String::new(),
+        app_version: String::new(),
+        public_key: hex::encode(peer_identity.public_key()),
+        endpoint: "203.0.113.32:51820".to_string(),
+        nat_type: "Unknown".to_string(),
+        virtual_ip: "10.20.0.8".to_string(),
+        online: true,
+        last_seen: 0,
+        relay_rtt_ms: None,
+    };
+    daemon.peers.add_peer(&peer_info).await;
+    daemon.control.set_peer_for_test(peer_info.clone()).await;
+
+    // Install an initial active session configured to require rekey immediately
+    let mut init_initiator =
+        HandshakeInitiator::new(daemon.local_identity().unwrap(), peer_identity.public_key(), None);
+    let init_initiation = init_initiator.create_initiation().unwrap();
+    let mut init_responder = HandshakeResponder::new(peer_identity.clone(), None);
+    let (init_response, _) = init_responder
+        .consume_initiation_and_respond(&init_initiation)
+        .unwrap();
+    let old_keys = init_initiator.consume_response(&init_response).unwrap();
+    let old_session = TransportSession::new(old_keys)
+        .with_thresholds(0, Duration::ZERO, 1000, Duration::from_secs(60));
+    daemon
+        .transport
+        .add_session(&peer_info.node_id, old_session)
+        .await;
+
+    assert!(daemon.transport.has_session(&peer_info.node_id).await);
+    assert!(daemon.transport.session_needs_rekey(&peer_info.node_id).await);
+
+    let timeline = daemon.timeline.clone();
+
+    // Spawn maintenance task
+    let (kick_tx, kick_rx) = tokio::sync::watch::channel(1u64);
+    let ctx = HandshakeMaintenanceContext {
+        peers: daemon.peers.clone(),
+        transport: daemon.transport.clone(),
+        pending: daemon.pending_handshakes.clone(),
+        handshake_arbiter: daemon.handshake_arbiter.clone(),
+        control: daemon.control.clone(),
+        local_candidates: daemon.local_candidates.clone(),
+        local_candidate_sources: daemon.local_candidate_sources.clone(),
+        local_network_identity: daemon.local_network_identity.clone(),
+        candidate_snapshot: daemon.candidate_snapshot.clone(),
+        candidate_refresh_lock: daemon.candidate_refresh_lock.clone(),
+        nat_profile: daemon.nat_profile.clone(),
+        udp_transport: daemon.udp_transport.clone(),
+        runtime_stun_servers: daemon.runtime_stun_servers.clone(),
+        runtime_stun_timeout: daemon.runtime_stun_timeout.clone(),
+        udp_advertise: None,
+        node_private_key: daemon.config.node.private_key.clone(),
+        kick_rx,
+        handshake_retry_kick_tx: daemon.handshake_retry_kick_tx.clone(),
+        timeline: daemon.timeline.clone(),
+    };
+    let maintenance_task = tokio::spawn(run_handshake_maintenance(ctx));
+
+    // Wake maintenance to initiate rekey
+    kick_tx.send_replace(2);
+
+    // Verify bounded retransmission fires despite has_session being true!
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let snap = timeline.snapshot();
+            if snap
+                .events
+                .iter()
+                .any(|e| e.event == "initiator_offer_retransmitted" && e.detail.as_deref().unwrap_or("").contains("is_rekey=true"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("maintenance rekey must retransmit even when active session exists");
+
+    maintenance_task.abort();
+}
+
+#[tokio::test]
 async fn direct_validation_registry_single_flight_merges_newest_endpoint() {
     let peers = Arc::new(PeerManager::new(
         Config::generate_default("https://ctrl.test", "net1").unwrap(),

@@ -411,6 +411,11 @@ mod android_bridge {
         {
             return Err("room profile belongs to a different network".into());
         }
+        // `Config::load_from_file` deliberately does not deserialize this
+        // transient path.  The pre-daemon registration below must reserve the
+        // same durable incarnation that `Daemon::new` will consume after the
+        // profile is persisted and the VPN fd is available.
+        config.config_path = Some(path.clone());
         config.control.auth_token = request.auth_token.clone();
         config.control.proxy_mode = ControlProxyMode::Direct;
         config.network.manual = false;
@@ -418,29 +423,50 @@ mod android_bridge {
         if !request.device_name.trim().is_empty() {
             config.node.device_name = request.device_name.trim().to_owned();
         }
-        let runtime = Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| "room registration runtime unavailable")?;
-        runtime
+        // Room preparation performs a control-plane registration before the
+        // daemon is constructed. Reserve one durable boot incarnation now so
+        // the registration's `registration_incarnation` and the daemon's
+        // candidate/control labels share the same lifecycle fence. A missing
+        // durable state remains the existing fail-closed zero-incarnation
+        // behavior; the daemon will not invent a timestamp fallback.
+        let _ = p2pnet_daemon::incarnation::reserve_boot_incarnation(&config);
+        let runtime = match Builder::new_current_thread().enable_all().build() {
+            Ok(runtime) => runtime,
+            Err(_) => {
+                p2pnet_daemon::incarnation::discard_prepared_boot_incarnation(&config);
+                return Err("room registration runtime unavailable".into());
+            }
+        };
+        if runtime
             .block_on(p2pnet_daemon::control::ControlClient::register_room_profile(&mut config))
-            .map_err(|_| {
+            .is_err()
+        {
+            p2pnet_daemon::incarnation::discard_prepared_boot_incarnation(&config);
+            return Err(
                 "room registration failed; check membership, server version and connectivity"
-            })?;
+                    .into(),
+            );
+        }
         let reply = serde_json::json!({"virtual_ip": config.network.virtual_ip, "cidr": config.network.cidr}).to_string();
         config.control.auth_token.clear();
         config.diagnostics.auth_token = None;
         config.diagnostics.auth_token_path = None;
         config.diagnostics.log_path = None;
-        let _guard = start_lock()
-            .lock()
-            .map_err(|_| "room profile lock unavailable")?;
+        let _guard = match start_lock().lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                p2pnet_daemon::incarnation::discard_prepared_boot_incarnation(&config);
+                return Err("room profile lock unavailable".into());
+            }
+        };
         if runtime_running() {
+            p2pnet_daemon::incarnation::discard_prepared_boot_incarnation(&config);
             return Err("VPN state changed during room preparation".into());
         }
-        config
-            .save_to_file(&path)
-            .map_err(|_| "room identity could not be persisted")?;
+        if config.save_to_file(&path).is_err() {
+            p2pnet_daemon::incarnation::discard_prepared_boot_incarnation(&config);
+            return Err("room identity could not be persisted".into());
+        }
         Ok(reply)
     }
 

@@ -89,10 +89,17 @@ impl Daemon {
         if !self
             .signal_sender_identity_matches_peer(from_node_id, sender_public_key)
         {
+            let reason = if !self.peers.peer_exists_sync(from_node_id) {
+                "membership_revoked"
+            } else if self.peers.peer_session_generation_sync(from_node_id).is_none() {
+                "peer_lifecycle_pending"
+            } else {
+                "sender_key_mismatch"
+            };
             self.timeline.emit(
                 "peer_answer_rejected",
                 None,
-                Some("stale_sender_identity"),
+                Some(reason),
                 Some(format!("peer={from_node_id}")),
             );
             return Ok(false);

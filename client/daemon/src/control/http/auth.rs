@@ -108,36 +108,37 @@ pub(super) async fn obtain_device_credential(
 struct RelayTicketResponse {
     ticket: Option<String>,
     expires_at: Option<i64>,
-    error: Option<String>,
 }
 
 pub(super) async fn fetch_relay_ticket_http(
     http: &reqwest::Client,
     base_url: &str,
     token: &str,
+    registration_seq: Option<u64>,
     audience: &str,
     region: &str,
 ) -> Result<FetchRelayTicketResponse> {
-    let resp = http
-        .post(format!("{base_url}/api/v1/relay/tickets"))
-        .timeout(CONTROL_REQUEST_TIMEOUT)
-        .bearer_auth(token)
-        .json(&serde_json::json!({
-            "audience": audience,
-            "region": region,
-        }))
+    let resp = with_registration_sequence(
+        http
+            .post(format!("{base_url}/api/v1/relay/tickets"))
+            .timeout(CONTROL_REQUEST_TIMEOUT)
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "audience": audience,
+                "region": region,
+            })),
+        registration_seq,
+    )
         .send()
         .await
         .map_err(|e| DaemonError::ControlPlane(format!("relay ticket request failed: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body: RelayTicketResponse = resp.json().await.unwrap_or(RelayTicketResponse {
-            ticket: None,
-            expires_at: None,
-            error: Some(format!("HTTP {status}")),
-        });
-        let msg = body.error.unwrap_or_else(|| format!("HTTP {status}"));
+        let (msg, error_code, current_seq) = control_error_detail(resp).await;
+        if let Some(error) = registration_conflict_error(status, error_code, current_seq, &msg) {
+            return Err(error);
+        }
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(DaemonError::ControlPlane(format!("permanent auth: {msg}")));
         }

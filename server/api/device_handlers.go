@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/yhan-sun/p2wlan/server/auth"
+	"github.com/yhan-sun/p2wlan/server/database"
 )
 
 // ---- Device endpoints ----
@@ -24,6 +26,10 @@ func (s *Server) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 		Ed25519PublicKey    string `json:"ed25519_public_key"`
 		ChallengeID         string `json:"challenge_id"`
 		ChallengeSignature  string `json:"challenge_signature"`
+		// RegistrationIncarnation is the daemon's durable monotonic boot
+		// counter. It fences a late registration from an older process that
+		// still holds the same device credential.
+		RegistrationIncarnation *int64 `json:"registration_incarnation"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
@@ -66,6 +72,10 @@ func (s *Server) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.AppVersion) > 64 {
 		http.Error(w, `{"error":"app_version too long"}`, http.StatusBadRequest)
+		return
+	}
+	if req.RegistrationIncarnation != nil && *req.RegistrationIncarnation < 0 {
+		http.Error(w, `{"error":"registration_incarnation must not be negative"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -133,10 +143,55 @@ func (s *Server) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	device, err := s.db.CreateDeviceWithOptions(userID, networkID, req.PublicKey, req.DeviceName, req.Platform, ed25519PubKey, req.VirtualIP, req.AppVersion)
+	// Serialize a re-registration with control requests from the existing
+	// daemon.  The request that already held the per-device lock is allowed to
+	// finish before its replacement clears transport state; every request that
+	// begins afterwards observes the new registration sequence.  New public
+	// keys have no prior daemon session to fence.
+	var previousRegistrationSequence int64
+	if existingDevice, err := s.db.GetDeviceByPublicKey(networkID, req.PublicKey); err == nil {
+		unlock := s.lockDeviceRegistrationSession(existingDevice.ID)
+		defer unlock()
+		// Refresh under the lock in case an earlier registration completed while
+		// this request was waiting for it.
+		if currentDevice, currentErr := s.db.GetDevice(existingDevice.ID); currentErr == nil {
+			previousRegistrationSequence = currentDevice.RegistrationSeq
+		}
+	}
+
+	device, err := s.db.RegisterDeviceWithOptions(
+		userID,
+		networkID,
+		req.PublicKey,
+		req.DeviceName,
+		req.Platform,
+		ed25519PubKey,
+		req.VirtualIP,
+		req.AppVersion,
+		database.DeviceRegistrationAttempt{
+			Incarnation:        req.RegistrationIncarnation,
+			EnforceIncarnation: true,
+		},
+	)
 	if err != nil {
+		var conflict *database.RegistrationConflictError
+		if errors.As(err, &conflict) {
+			writeJSON(w, http.StatusConflict, map[string]interface{}{
+				"error":                    conflict.Error(),
+				"error_code":               conflict.Code,
+				"registration_seq":         conflict.CurrentSequence,
+				"registration_incarnation": conflict.CurrentIncarnation,
+			})
+			return
+		}
 		writeDeviceMutationError(w, err, "device registration failed")
 		return
+	}
+	if previousRegistrationSequence != 0 && device.RegistrationSeq != previousRegistrationSequence && s.hub != nil {
+		// A freshly registered daemon owns the wake-up channel.  This also
+		// closes an older already-upgraded socket; future upgrades require the
+		// new header sequence through RequireCurrentDeviceRegistrationSession.
+		s.hub.Disconnect(device.ID)
 	}
 
 	var cidr string
@@ -146,11 +201,13 @@ func (s *Server) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]interface{}{
-		"success":       true,
-		"node_id":       device.ID,
-		"virtual_ip":    device.VirtualIP,
-		"cidr":          cidr,
-		"relay_servers": s.relayServers,
+		"success":                  true,
+		"node_id":                  device.ID,
+		"virtual_ip":               device.VirtualIP,
+		"cidr":                     cidr,
+		"registration_seq":         device.RegistrationSeq,
+		"registration_incarnation": device.RegistrationIncarnation,
+		"relay_servers":            s.relayServers,
 	}
 
 	// Include relay catalog for new clients that support it
@@ -302,11 +359,18 @@ func (s *Server) UpdateDeviceEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	var updateErr error
 	if refreshLease {
-		updateErr = s.db.UpdateDeviceEndpoint(pathDeviceID, req.Endpoint, req.NATType, req.RelayRTTMS)
+		if registrationSequence, ok := currentRequestRegistrationSequence(r); ok {
+			updateErr = s.db.UpdateDeviceEndpointForRegistrationSession(pathDeviceID, registrationSequence, req.Endpoint, req.NATType, req.RelayRTTMS)
+		} else {
+			updateErr = s.db.UpdateDeviceEndpoint(pathDeviceID, req.Endpoint, req.NATType, req.RelayRTTMS)
+		}
 	} else {
 		updateErr = s.db.UpdateDeviceEndpointMetadata(pathDeviceID, req.Endpoint, req.NATType, req.RelayRTTMS)
 	}
 	if updateErr != nil {
+		if writeRegistrationSessionConflict(w, updateErr) {
+			return
+		}
 		http.Error(w, `{"error":"endpoint update failed"}`, http.StatusInternalServerError)
 		return
 	}
@@ -325,8 +389,10 @@ func (s *Server) ReleaseDevicePresence(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authorized := false
+	deviceAuthenticated := false
 	if deviceClaims, err := auth.GetDeviceClaims(r.Context()); err == nil {
 		authorized = pathDeviceID == deviceClaims.DeviceID
+		deviceAuthenticated = authorized
 	} else if userClaims, err := auth.GetClaims(r.Context()); err == nil {
 		belongs, err := s.db.DeviceBelongsToUser(pathDeviceID, userClaims.UserID)
 		authorized = err == nil && belongs
@@ -336,7 +402,20 @@ func (s *Server) ReleaseDevicePresence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.db.ReleaseDevicePresence(pathDeviceID); err != nil {
+	var releaseErr error
+	if deviceAuthenticated {
+		if registrationSequence, ok := currentRequestRegistrationSequence(r); ok {
+			releaseErr = s.db.ReleaseDevicePresenceForRegistrationSession(pathDeviceID, registrationSequence)
+		} else {
+			releaseErr = s.db.ReleaseDevicePresence(pathDeviceID)
+		}
+	} else {
+		releaseErr = s.db.ReleaseDevicePresence(pathDeviceID)
+	}
+	if releaseErr != nil {
+		if writeRegistrationSessionConflict(w, releaseErr) {
+			return
+		}
 		http.Error(w, `{"error":"presence release failed"}`, http.StatusInternalServerError)
 		return
 	}

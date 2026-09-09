@@ -1,31 +1,40 @@
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn poll_peers(
     http: &reqwest::Client,
     base_url: &str,
     token: &str,
     config: &Config,
     self_node_id: &str,
+    registration_seq: Option<u64>,
     state: &Arc<RwLock<ClientState>>,
     event_tx: &mpsc::UnboundedSender<ControlEvent>,
 ) -> Result<()> {
     let request_started = std::time::Instant::now();
-    let res = http
+    let res = with_registration_sequence(
+        http
         .get(format!(
             "{base_url}/api/v1/nodes?network_id={}",
             config.network.network_id
         ))
         .timeout(CONTROL_REQUEST_TIMEOUT)
-        .bearer_auth(token)
+        .bearer_auth(token),
+        registration_seq,
+    )
         .send()
         .await
         .map_err(|e| DaemonError::ControlPlane(format!("list nodes request failed: {e}")))?;
 
     if !res.status().is_success() {
-        if matches!(res.status().as_u16(), 401 | 403 | 404) {
+        let status = res.status();
+        let (detail, error_code, current_seq) = control_error_detail(res).await;
+        if matches!(status.as_u16(), 401 | 403 | 404) {
             state.read().await.room_authorization.invalidate();
         }
+        if let Some(error) = registration_conflict_error(status, error_code, current_seq, &detail) {
+            return Err(error);
+        }
         return Err(DaemonError::ControlPlane(format!(
-            "list nodes request returned HTTP {}",
-            res.status()
+            "list nodes request returned HTTP {status}: {detail}",
         )));
     }
 
@@ -151,16 +160,19 @@ pub(super) fn peer_metadata_changed(known: &PeerInfo, peer: &PeerInfo) -> bool {
         || known.relay_rtt_ms != peer.relay_rtt_ms
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn create_tunnel(
     http: &reqwest::Client,
     base_url: &str,
     token: &str,
     device_id: &str,
+    registration_seq: Option<u64>,
     protocol: &str,
     local_port: u16,
     remote_port: u16,
 ) -> Result<(String, String)> {
-    let res = http
+    let res = with_registration_sequence(
+        http
         .post(format!("{base_url}/api/v1/tunnels"))
         .timeout(CONTROL_REQUEST_TIMEOUT)
         .bearer_auth(token)
@@ -170,15 +182,21 @@ pub(super) async fn create_tunnel(
             "local_port": local_port,
             "remote_port": remote_port,
             "local_address": "127.0.0.1",
-        }))
+        })),
+        registration_seq,
+    )
         .send()
         .await
         .map_err(|e| DaemonError::ControlPlane(format!("create tunnel request failed: {e}")))?;
 
     if !res.status().is_success() {
+        let status = res.status();
+        let (detail, error_code, current_seq) = control_error_detail(res).await;
+        if let Some(error) = registration_conflict_error(status, error_code, current_seq, &detail) {
+            return Err(error);
+        }
         return Err(DaemonError::ControlPlane(format!(
-            "create tunnel request returned HTTP {}",
-            res.status()
+            "create tunnel request returned HTTP {status}: {detail}",
         )));
     }
 

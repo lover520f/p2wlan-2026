@@ -505,6 +505,245 @@ func TestDeviceReregistrationClearsPreviousRuntimeEndpointFacts(t *testing.T) {
 	}
 }
 
+func TestDeviceReregistrationRetainsExistingCredentialsAndAdvancesSequence(t *testing.T) {
+	db, err := New(filepath.Join(t.TempDir(), "p2wlan.db"))
+	if err != nil {
+		t.Fatalf("New database: %v", err)
+	}
+	defer db.Close()
+
+	user, err := db.CreateUser("reregister-credential@p2wlan.local", "pwd")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	device, err := db.CreateDevice(user.ID, "default", "reregister-credential-key", "before", "macos", "")
+	if err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	credential, token, err := db.CreateDeviceCredential(device.ID, 3600)
+	if err != nil {
+		t.Fatalf("CreateDeviceCredential: %v", err)
+	}
+
+	reregistered, err := db.CreateDeviceWithOptions(
+		user.ID, "default", device.PublicKey, "after", "macos", "", "", "0.1.152",
+	)
+	if err != nil {
+		t.Fatalf("CreateDeviceWithOptions re-registration: %v", err)
+	}
+	if reregistered.RegistrationSeq != device.RegistrationSeq+1 {
+		t.Fatalf("registration sequence = %d, want %d", reregistered.RegistrationSeq, device.RegistrationSeq+1)
+	}
+	if _, _, err := db.ValidateDeviceCredential(token); err != nil {
+		t.Fatalf("re-registration must retain the credential that can authorize the restarted daemon: %v", err)
+	}
+
+	var revoked int
+	if err := db.QueryRow(`SELECT revoked FROM device_credentials WHERE id = ?`, credential.ID).Scan(&revoked); err != nil {
+		t.Fatalf("read credential state: %v", err)
+	}
+	if revoked != 0 {
+		t.Fatal("re-registration must not revoke an otherwise valid credential")
+	}
+}
+
+func TestSequenceAwareRegistrationFencesOlderIncarnationAndReplaysSameBoot(t *testing.T) {
+	db, err := New(filepath.Join(t.TempDir(), "p2wlan.db"))
+	if err != nil {
+		t.Fatalf("New database: %v", err)
+	}
+	defer db.Close()
+
+	user, err := db.CreateUser("registration-fence@p2wlan.local", "pwd")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	device, err := db.CreateDevice(user.ID, "default", "registration-fence-key", "initial", "macos", "")
+	if err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+
+	oldBoot := int64(100)
+	first, err := db.RegisterDeviceWithOptions(
+		user.ID, "default", device.PublicKey, "boot-100", "macos", "", "", "",
+		DeviceRegistrationAttempt{Incarnation: &oldBoot, EnforceIncarnation: true},
+	)
+	if err != nil {
+		t.Fatalf("register first boot: %v", err)
+	}
+	if first.RegistrationSeq != 2 || first.RegistrationIncarnation != oldBoot {
+		t.Fatalf("unexpected first registration: %+v", first)
+	}
+	if err := db.UpdateDeviceEndpoint(first.ID, "198.51.100.10:51820", "p2v2:m=endpoint_independent;g=1;l=2", nil); err != nil {
+		t.Fatalf("publish endpoint: %v", err)
+	}
+
+	// A replay from the same boot models a completed request whose HTTP
+	// response was lost. It must return the same registration instead of
+	// clearing endpoint state or consuming another sequence.
+	replayed, err := db.RegisterDeviceWithOptions(
+		user.ID, "default", device.PublicKey, "boot-100-retry", "macos", "", "", "",
+		DeviceRegistrationAttempt{Incarnation: &oldBoot, EnforceIncarnation: true},
+	)
+	if err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	if replayed.RegistrationSeq != first.RegistrationSeq || replayed.Endpoint != "198.51.100.10:51820" {
+		t.Fatalf("same-boot replay changed registration state: %+v", replayed)
+	}
+
+	newBoot := int64(101)
+	newer, err := db.RegisterDeviceWithOptions(
+		user.ID, "default", device.PublicKey, "boot-101", "macos", "", "", "",
+		DeviceRegistrationAttempt{Incarnation: &newBoot, EnforceIncarnation: true},
+	)
+	if err != nil {
+		t.Fatalf("register newer boot: %v", err)
+	}
+	if newer.RegistrationSeq != 3 || newer.RegistrationIncarnation != newBoot || newer.Endpoint != "" || newer.NATType != "unknown" {
+		t.Fatalf("newer boot did not create a clean incarnation: %+v", newer)
+	}
+
+	// An incarnation-aware device accepts endpoint metadata only from the
+	// exact registration sequence returned by the server. Missing, stale, and
+	// guessed-future labels must retain the new boot's clean transport state;
+	// heartbeat calls still complete so a stale daemon cannot turn this into an
+	// error-amplification loop.
+	if err := db.ReleaseDevicePresence(device.ID); err != nil {
+		t.Fatalf("ReleaseDevicePresence: %v", err)
+	}
+	for _, staleNAT := range []string{
+		"p2v2:m=endpoint_independent;g=1",
+		"p2v2:m=endpoint_independent;g=1;l=2",
+		"p2v2:m=endpoint_independent;g=1;l=999",
+		"p2v2:m=endpoint_independent;g=1;l=not-a-number",
+	} {
+		if err := db.UpdateDeviceEndpoint(device.ID, "198.51.100.11:51820", staleNAT, nil); err != nil {
+			t.Fatalf("stale lifecycle heartbeat %q: %v", staleNAT, err)
+		}
+		stored, err := db.GetDevice(device.ID)
+		if err != nil {
+			t.Fatalf("GetDevice after stale lifecycle heartbeat: %v", err)
+		}
+		if stored.Endpoint != "" || stored.NATType != "unknown" || !stored.Online {
+			t.Fatalf("stale lifecycle metadata overwrote new boot for %q: %+v", staleNAT, stored)
+		}
+	}
+	if err := db.UpdateDeviceEndpoint(device.ID, "198.51.100.12:51820", "p2v2:m=endpoint_independent;g=1;l=3", nil); err != nil {
+		t.Fatalf("current lifecycle endpoint update: %v", err)
+	}
+	storedAfterEndpoint, err := db.GetDevice(device.ID)
+	if err != nil {
+		t.Fatalf("GetDevice after current lifecycle endpoint: %v", err)
+	}
+	if storedAfterEndpoint.Endpoint != "198.51.100.12:51820" || storedAfterEndpoint.NATType != "p2v2:m=endpoint_independent;g=1;l=3" {
+		t.Fatalf("current lifecycle endpoint was not accepted: %+v", storedAfterEndpoint)
+	}
+
+	_, err = db.RegisterDeviceWithOptions(
+		user.ID, "default", device.PublicKey, "legacy-late-request", "macos", "", "", "",
+		DeviceRegistrationAttempt{EnforceIncarnation: true},
+	)
+	var upgradeConflict *RegistrationConflictError
+	if !errors.As(err, &upgradeConflict) || upgradeConflict.Code != "registration_protocol_upgrade_required" {
+		t.Fatalf("unfenced legacy request must be rejected after lifecycle upgrade, got err=%v conflict=%+v", err, upgradeConflict)
+	}
+
+	_, err = db.RegisterDeviceWithOptions(
+		user.ID, "default", device.PublicKey, "late-boot-100", "macos", "", "", "",
+		DeviceRegistrationAttempt{Incarnation: &oldBoot, EnforceIncarnation: true},
+	)
+	var conflict *RegistrationConflictError
+	if !errors.As(err, &conflict) || conflict.Code != "registration_conflict" || conflict.CurrentSequence != newer.RegistrationSeq {
+		t.Fatalf("older boot must be fenced, got err=%v conflict=%+v", err, conflict)
+	}
+	stored, err := db.GetDevice(device.ID)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	if stored.RegistrationIncarnation != newBoot || stored.DeviceName != "boot-101" || stored.RegistrationSeq != newer.RegistrationSeq {
+		t.Fatalf("late old registration overwrote the newer boot: %+v", stored)
+	}
+}
+
+func TestUpdateDeviceEndpointMonotonicGeneration(t *testing.T) {
+	db, err := New(filepath.Join(t.TempDir(), "p2wlan.db"))
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer db.Close()
+
+	user, err := db.CreateUser("monotonic-test@p2wlan.local", "pwd")
+	if err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	dev, err := db.CreateDeviceWithOptions(
+		user.ID, "default", "monotonic-pubkey", "mono-device", "macos", "", "", "0.1.152",
+	)
+	if err != nil {
+		t.Fatalf("CreateDeviceWithOptions failed: %v", err)
+	}
+
+	// 1. Initial publication at generation 2
+	rtt2 := int64(20)
+	if err := db.UpdateDeviceEndpoint(dev.ID, "198.51.100.1:51820", "p2v2:m=endpoint_independent;g=2", &rtt2); err != nil {
+		t.Fatalf("generation 2 update failed: %v", err)
+	}
+	stored, err := db.GetDevice(dev.ID)
+	if err != nil || stored.Endpoint != "198.51.100.1:51820" || stored.NATType != "p2v2:m=endpoint_independent;g=2" {
+		t.Fatalf("unexpected stored device after gen 2: %+v", stored)
+	}
+
+	// 2. Stale update at generation 1 should NOT overwrite endpoint or nat_type, but refreshes relay RTT
+	rtt1 := int64(15)
+	if err := db.UpdateDeviceEndpoint(dev.ID, "198.51.100.1:51821", "p2v2:m=address_or_port_dependent;g=1", &rtt1); err != nil {
+		t.Fatalf("generation 1 update failed: %v", err)
+	}
+	stored, err = db.GetDevice(dev.ID)
+	if err != nil {
+		t.Fatalf("GetDevice failed: %v", err)
+	}
+	if stored.Endpoint != "198.51.100.1:51820" {
+		t.Fatalf("stale generation 1 overwrote endpoint: got %s, want 198.51.100.1:51820", stored.Endpoint)
+	}
+	if stored.NATType != "p2v2:m=endpoint_independent;g=2" {
+		t.Fatalf("stale generation 1 overwrote nat_type: got %s, want gen 2", stored.NATType)
+	}
+	if stored.RelayRTTMS == nil || *stored.RelayRTTMS != 15 {
+		t.Fatalf("stale update should still refresh relay RTT: got %+v", stored.RelayRTTMS)
+	}
+
+	// 3. Newer update at generation 3 should overwrite
+	rtt3 := int64(25)
+	if err := db.UpdateDeviceEndpoint(dev.ID, "198.51.100.2:51820", "p2v2:m=endpoint_independent;g=3", &rtt3); err != nil {
+		t.Fatalf("generation 3 update failed: %v", err)
+	}
+	stored, err = db.GetDevice(dev.ID)
+	if err != nil || stored.Endpoint != "198.51.100.2:51820" || stored.NATType != "p2v2:m=endpoint_independent;g=3" {
+		t.Fatalf("generation 3 should update device: %+v", stored)
+	}
+
+	// 4. Re-registration starts a new process lifecycle: resets nat_type to unknown
+	redev, err := db.CreateDeviceWithOptions(
+		user.ID, "default", "monotonic-pubkey", "mono-device-restart", "macos", "", "", "0.1.152",
+	)
+	if err != nil {
+		t.Fatalf("re-registration failed: %v", err)
+	}
+	if redev.NATType != "unknown" {
+		t.Fatalf("re-registration should reset nat_type: got %s", redev.NATType)
+	}
+	// A fresh generation 1 in the new lifecycle is accepted
+	rttFresh := int64(10)
+	if err := db.UpdateDeviceEndpoint(dev.ID, "198.51.100.3:51820", "p2v2:m=endpoint_independent;g=1", &rttFresh); err != nil {
+		t.Fatalf("fresh lifecycle gen 1 update failed: %v", err)
+	}
+	stored, err = db.GetDevice(dev.ID)
+	if err != nil || stored.Endpoint != "198.51.100.3:51820" || stored.NATType != "p2v2:m=endpoint_independent;g=1" {
+		t.Fatalf("fresh lifecycle should accept gen 1: %+v", stored)
+	}
+}
+
 func TestUpdateDeviceVirtualIPValidatesNetworkPool(t *testing.T) {
 	db, err := New(filepath.Join(t.TempDir(), "p2wlan.db"))
 	if err != nil {
@@ -1117,5 +1356,179 @@ func TestSignalSeqMigrationSeedsFromBackfilledRows(t *testing.T) {
 	}
 	if next.SignalSeq != maxAssigned+1 {
 		t.Fatalf("the next create must continue the backfilled sequence (max=%d), got %d", maxAssigned, next.SignalSeq)
+	}
+}
+
+func TestReviewNATStaleMetadataCannotOverwrite(t *testing.T) {
+	for _, api := range []string{"heartbeat", "metadata"} {
+		for _, stale := range []struct{ name, label string }{
+			{"unversioned", "unknown"},
+			{"same_generation_conflicting_capability", "p2v2:m=address_or_port_dependent;g=3"},
+		} {
+			t.Run(api+"/"+stale.name, func(t *testing.T) {
+				db, device := createTestDevice(t, "review@p2wlan.local", "review-device")
+				defer db.Close()
+				freshLabel := "p2v2:m=endpoint_independent;g=3"
+				freshEndpoint := "198.51.100.1:51820"
+				if err := db.UpdateDeviceEndpoint(device.ID, freshEndpoint, freshLabel, nil); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				if api == "heartbeat" {
+					err = db.UpdateDeviceEndpoint(device.ID, "", stale.label, nil)
+				} else {
+					err = db.UpdateDeviceEndpointMetadata(device.ID, "", stale.label, nil)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				stored, err := db.GetDevice(device.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stored.Endpoint != freshEndpoint || stored.NATType != freshLabel {
+					t.Fatalf("stale publication replaced fresh snapshot: endpoint=%q nat_type=%q; want endpoint=%q nat_type=%q", stored.Endpoint, stored.NATType, freshEndpoint, freshLabel)
+				}
+			})
+		}
+	}
+}
+
+func TestReviewNATConcurrentOutOfOrder(t *testing.T) {
+	db, device := createTestDevice(t, "concurrent-nat@p2wlan.local", "concurrent-nat-dev")
+	defer db.Close()
+
+	freshEndpoint := "198.51.100.10:51820"
+	freshNAT := "p2v2:m=endpoint_independent;g=5"
+	if err := db.UpdateDeviceEndpoint(device.ID, freshEndpoint, freshNAT, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	// Concurrently send out-of-order stale updates and unversioned heartbeats
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			if idx%3 == 0 {
+				_ = db.UpdateDeviceEndpoint(device.ID, "", "unknown", nil)
+			} else if idx%3 == 1 {
+				_ = db.UpdateDeviceEndpoint(device.ID, "10.0.0.1:1234", "p2v2:m=address_or_port_dependent;g=2", nil)
+			} else {
+				_ = db.UpdateDeviceEndpointMetadata(device.ID, "", "p2v2:m=address_or_port_dependent;g=5", nil)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	stored, err := db.GetDevice(device.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Endpoint != freshEndpoint || stored.NATType != freshNAT {
+		t.Fatalf("concurrent stale updates corrupted state: endpoint=%q nat_type=%q; want %q %q",
+			stored.Endpoint, stored.NATType, freshEndpoint, freshNAT)
+	}
+}
+
+func TestReviewNATRebootDelayedStaleRequest(t *testing.T) {
+	db, err := New(filepath.Join(t.TempDir(), "p2wlan.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	user, err := db.CreateUser("reboot-nat@p2wlan.local", "pwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, err := db.CreateDeviceWithOptions(
+		user.ID, "default", "reboot-pubkey", "reboot-dev", "macos", "", "", "0.1.152",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Daemon lifecycle 1 publishes g=3 with lifecycle=1
+	rtt3 := int64(25)
+	if err := db.UpdateDeviceEndpoint(dev.ID, "198.51.100.1:51820", "p2v2:m=endpoint_independent;g=3;l=1", &rtt3); err != nil {
+		t.Fatal(err)
+	}
+
+	// Daemon restarts and re-registers (now registration_seq is 2)
+	redev, err := db.CreateDeviceWithOptions(
+		user.ID, "default", "reboot-pubkey", "reboot-dev", "macos", "", "", "0.1.152",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redev.NATType != "unknown" || redev.Endpoint != "" {
+		t.Fatalf("re-registration must clear runtime transport: nat_type=%q endpoint=%q", redev.NATType, redev.Endpoint)
+	}
+
+	// A delayed request from lifecycle 1 (g=3;l=1) arrives AFTER restart
+	rttStale := int64(20)
+	if err := db.UpdateDeviceEndpoint(dev.ID, "198.51.100.1:51820", "p2v2:m=endpoint_independent;g=3;l=1", &rttStale); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := db.GetDevice(dev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Delayed request from lifecycle 1 must NOT overwrite the new lifecycle's empty/unknown state
+	if stored.Endpoint != "" || stored.NATType != "unknown" {
+		t.Fatalf("delayed request from old lifecycle overwrote restarted device: endpoint=%q nat_type=%q",
+			stored.Endpoint, stored.NATType)
+	}
+
+	// New process publishes fresh generation 1 in lifecycle 2 (l=2)
+	rttFresh := int64(15)
+	freshEndpoint := "198.51.100.2:51820"
+	freshNAT := "p2v2:m=endpoint_independent;g=1;l=2"
+	if err := db.UpdateDeviceEndpoint(dev.ID, freshEndpoint, freshNAT, &rttFresh); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = db.GetDevice(dev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Endpoint != freshEndpoint || stored.NATType != freshNAT {
+		t.Fatalf("fresh lifecycle update was not accepted: endpoint=%q nat_type=%q",
+			stored.Endpoint, stored.NATType)
+	}
+}
+
+func TestReviewNATSameGenObservationFreshness(t *testing.T) {
+	db, device := createTestDevice(t, "obs-nat@p2wlan.local", "obs-dev")
+	defer db.Close()
+
+	endpoint := "198.51.100.5:51820"
+	// Generation 3 with observation sequence 1
+	if err := db.UpdateDeviceEndpoint(device.ID, endpoint, "p2v2:m=endpoint_independent;g=3;o=1", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh observation sequence 2 with same capability and generation: allowed
+	if err := db.UpdateDeviceEndpoint(device.ID, endpoint, "p2v2:m=endpoint_independent;g=3;o=2", nil); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := db.GetDevice(device.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.NATType != "p2v2:m=endpoint_independent;g=3;o=2" {
+		t.Fatalf("fresh observation was not accepted: got %q", stored.NATType)
+	}
+
+	// Stale observation sequence 1: rejected from overwriting
+	if err := db.UpdateDeviceEndpoint(device.ID, endpoint, "p2v2:m=endpoint_independent;g=3;o=1", nil); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = db.GetDevice(device.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.NATType != "p2v2:m=endpoint_independent;g=3;o=2" {
+		t.Fatalf("stale observation overwrote newer observation: got %q", stored.NATType)
 	}
 }

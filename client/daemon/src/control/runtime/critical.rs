@@ -30,6 +30,8 @@ async fn run_critical_control_loop(
     relay_selection: Option<Arc<RwLock<RelaySelectionDiagnostics>>>,
     health: Option<Arc<crate::tasks::HealthState>>,
     mut shutdown_rx: watch::Receiver<bool>,
+    advertised_snapshot: Arc<std::sync::Mutex<AdvertisedEndpointSnapshot>>,
+    lifecycle_tx: mpsc::UnboundedSender<ControlCommand>,
 ) {
     let answer_permits = Arc::new(Semaphore::new(CRITICAL_ANSWER_MAX_INFLIGHT));
     let offer_permits = Arc::new(Semaphore::new(CRITICAL_OFFER_MAX_INFLIGHT));
@@ -81,6 +83,8 @@ async fn run_critical_control_loop(
                             ctrl_permits.clone(),
                             relay_selection.clone(),
                             health.clone(),
+                            advertised_snapshot.clone(),
+                            lifecycle_tx.clone(),
                         ));
                     }
                     CriticalControlCommand::Shutdown => {
@@ -301,8 +305,13 @@ async fn run_candidate_offer_worker(
                 // not prove that the server did not accept its POST; starting
                 // a new future here can therefore duplicate a candidate
                 // publication that already reached the control plane.
-                let request =
-                    send_prepared_signal(&current_http, &auth.base_url, &auth.token, &payload);
+                let request = send_prepared_signal(
+                    &current_http,
+                    &auth.base_url,
+                    &auth.token,
+                    auth.registration_seq,
+                    &payload,
+                );
                 tokio::pin!(request);
                 loop {
                     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -529,6 +538,8 @@ async fn run_critical_endpoint_command(
     permits: Arc<Semaphore>,
     relay_selection: Option<Arc<RwLock<RelaySelectionDiagnostics>>>,
     health: Option<Arc<crate::tasks::HealthState>>,
+    advertised_snapshot: Arc<std::sync::Mutex<AdvertisedEndpointSnapshot>>,
+    lifecycle_tx: mpsc::UnboundedSender<ControlCommand>,
 ) {
     let Some(_permit) = acquire_critical_permit_or_skip(&permits, &response_tx).await else {
         return;
@@ -539,9 +550,25 @@ async fn run_critical_endpoint_command(
     else {
         return;
     };
+    // The critical lane may have waited behind another endpoint publication.
+    // Do not issue a request if ordinary registration has already replaced
+    // this identity; the server header fence remains the final authority for
+    // the race after this local check.
+    if auth_rx
+        .borrow()
+        .as_ref()
+        .is_none_or(|current| !auth.same_identity_as(current))
+    {
+        let _ = response_tx.send(Err(DaemonError::ControlPlane(
+            "critical endpoint publish aborted: control identity was replaced by re-registration"
+                .into(),
+        )));
+        return;
+    }
     let relay_rtt_ms = current_relay_rtt_ms(relay_selection.as_ref()).await;
+    let published_nat_type = control_label_with_registration_seq(&nat_type, auth.registration_seq);
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let result = if remaining.is_zero() {
+    let mut result = if remaining.is_zero() {
         Err(DaemonError::ControlPlane(
             "critical lane deadline exceeded before endpoint publish".into(),
         ))
@@ -556,8 +583,9 @@ async fn run_critical_endpoint_command(
                         &auth.token,
                         &auth.self_node_id,
                         &endpoint,
-                        &nat_type,
+                        &published_nat_type,
                         relay_rtt_ms,
+                        auth.registration_seq,
                     )) => {
                         match result {
                             Ok(result) => result,
@@ -571,18 +599,40 @@ async fn run_critical_endpoint_command(
             }
         }
     };
+    // A successful response must still belong to the registration that issued
+    // it.  This prevents an old critical task from updating its local
+    // snapshot or reporting a healthy lease after a concurrent re-register.
+    if result.is_ok()
+        && auth_rx
+            .borrow()
+            .as_ref()
+            .is_none_or(|current| !auth.same_identity_as(current))
+    {
+        result = Err(DaemonError::ControlPlane(
+            "critical endpoint publish completed after control identity was replaced".into(),
+        ));
+    }
     match &result {
         Ok(()) => {
             if let Some(health) = health.as_ref() {
                 health.mark_device_lease_success().await;
             }
+            advertised_snapshot
+                .lock()
+                .unwrap()
+                .update(endpoint.clone(), published_nat_type.clone());
             debug!(
                 "Updated endpoint for {} through handshake control lane: {} ({})",
-                auth.self_node_id, endpoint, nat_type
+                auth.self_node_id, endpoint, published_nat_type
             );
             let _ = event_tx.send(ControlEvent::ControlHealthy);
         }
         Err(error) => {
+            if is_registration_conflict_error(&error.to_string()) {
+                let _ = lifecycle_tx.send(ControlCommand::LifecycleConflict {
+                    message: error.to_string(),
+                });
+            }
             if let Some(health) = health.as_ref() {
                 // Endpoint PATCH is the online lease operation. Preserve API
                 // reachability independently: a later successful GET may
@@ -716,6 +766,7 @@ async fn send_critical_signal<T>(
                         &current_http,
                         &auth.base_url,
                         &auth.token,
+                        auth.registration_seq,
                         &payload,
                     )) => {
                         match result {
@@ -733,7 +784,12 @@ async fn send_critical_signal<T>(
             Ok(()) => return Some(Ok(())),
             Err(error)
                 if attempt + 1 < CRITICAL_SIGNAL_MAX_ATTEMPTS
-                    && !is_permanent_auth_error(&error.to_string()) =>
+                    && !is_permanent_auth_error(&error.to_string())
+                    // A 409 session fence is conclusive. Retrying the exact
+                    // same stale proof only burns the handshake window while
+                    // the ordinary lifecycle is already shutting this daemon
+                    // down on its next control poll.
+                    && !is_registration_conflict_error(&error.to_string()) =>
             {
                 warn!(
                     "Critical {signal_type} to {to_node_id} failed on attempt {}; retrying: {error}",

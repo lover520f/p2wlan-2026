@@ -359,4 +359,129 @@ mod tests {
             &sources,
         ));
     }
+
+    #[test]
+    fn test_port_mapping_local_addr_wildcard_resolution() {
+        let wildcard: SocketAddr = "0.0.0.0:61302".parse().unwrap();
+        let mut sources = HashMap::new();
+        let host_cand = "192.168.1.100:61302".to_string();
+        sources.insert(host_cand.clone(), "host".to_string());
+
+        // 1. When host candidate is in the list, resolves host candidate
+        let resolved = port_mapping_local_addr(
+            Some(wildcard),
+            std::slice::from_ref(&host_cand),
+            &sources,
+            None,
+        );
+        assert_eq!(resolved, Some("192.168.1.100:61302".parse().unwrap()));
+
+        // 1b. Stale host candidate port from previous socket is rebound to current socket port
+        let stale_host = "192.168.1.100:54321".to_string();
+        let mut stale_sources = HashMap::new();
+        stale_sources.insert(stale_host.clone(), "host".to_string());
+        let resolved_stale =
+            port_mapping_local_addr(Some(wildcard), &[stale_host], &stale_sources, None);
+        assert_eq!(
+            resolved_stale,
+            Some("192.168.1.100:61302".parse().unwrap()),
+            "Must bind to current UDP socket port, not stale candidate port"
+        );
+
+        // 2. Multi-NIC interface selection: selects the interface matching the default gateway subnet
+        let mock_addresses = vec![
+            IpAddr::V4("10.0.0.5".parse().unwrap()),
+            IpAddr::V4("192.168.1.100".parse().unwrap()),
+        ];
+        let gw_192 = Some("192.168.1.1".parse::<Ipv4Addr>().unwrap());
+        let gw_10 = Some("10.0.0.1".parse::<Ipv4Addr>().unwrap());
+
+        let resolved_gw_192 = port_mapping_local_addr_with_addresses(
+            Some(wildcard),
+            &[],
+            &HashMap::new(),
+            gw_192,
+            &mock_addresses,
+        );
+        assert_eq!(
+            resolved_gw_192,
+            Some("192.168.1.100:61302".parse().unwrap()),
+            "Must choose 192.168.1.100 matching gateway 192.168.1.1 subnet"
+        );
+
+        let resolved_gw_10 = port_mapping_local_addr_with_addresses(
+            Some(wildcard),
+            &[],
+            &HashMap::new(),
+            gw_10,
+            &mock_addresses,
+        );
+        assert_eq!(
+            resolved_gw_10,
+            Some("10.0.0.5:61302".parse().unwrap()),
+            "Must choose 10.0.0.5 matching gateway 10.0.0.1 subnet"
+        );
+
+        // A prior host snapshot can put the secondary interface first.  For a
+        // wildcard-bound socket, gateway mapping must still use the interface
+        // that reaches the selected default gateway.
+        let wrong_interface_host = "10.0.0.5:61302".to_string();
+        let gateway_interface_host = "192.168.1.100:61302".to_string();
+        let host_sources = HashMap::from([
+            (wrong_interface_host.clone(), "host".to_string()),
+            (gateway_interface_host.clone(), "host".to_string()),
+        ]);
+        let host_selected_gateway_192 = port_mapping_local_addr_with_addresses(
+            Some(wildcard),
+            &[wrong_interface_host, gateway_interface_host],
+            &host_sources,
+            gw_192,
+            &mock_addresses,
+        );
+        assert_eq!(
+            host_selected_gateway_192,
+            Some("192.168.1.100:61302".parse().unwrap()),
+            "Host-candidate order must not override the gateway interface"
+        );
+
+        // 3. Direct LAN IP on socket is preserved
+        let direct_lan: SocketAddr = "192.168.1.50:51820".parse().unwrap();
+        assert_eq!(
+            port_mapping_local_addr(Some(direct_lan), &[], &HashMap::new(), None),
+            Some(direct_lan)
+        );
+
+        // 4. Loopback or port 0 is rejected
+        let loopback: SocketAddr = "127.0.0.1:51820".parse().unwrap();
+        assert_ne!(
+            port_mapping_local_addr(Some(loopback), &[], &HashMap::new(), None),
+            Some(loopback)
+        );
+        let port_zero: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        assert_eq!(
+            port_mapping_local_addr(Some(port_zero), &[], &HashMap::new(), None),
+            None
+        );
+    }
+
+    #[test]
+    fn test_stale_gateway_mapping_rejected_on_socket_or_generation_change() {
+        let initial_udp: Option<SocketAddr> = Some("0.0.0.0:40001".parse().unwrap());
+        let rebound_udp: Option<SocketAddr> = Some("0.0.0.0:40002".parse().unwrap());
+        let initial_gen = 1u64;
+        let advanced_gen = 2u64;
+
+        assert!(
+            !port_mapping_result_is_current(initial_udp, initial_gen, rebound_udp, initial_gen),
+            "Socket rebound must mark mapping stale"
+        );
+        assert!(
+            !port_mapping_result_is_current(initial_udp, initial_gen, initial_udp, advanced_gen),
+            "Generation advance must mark mapping stale"
+        );
+        assert!(
+            port_mapping_result_is_current(initial_udp, initial_gen, initial_udp, initial_gen),
+            "Matching socket and generation is valid"
+        );
+    }
 }

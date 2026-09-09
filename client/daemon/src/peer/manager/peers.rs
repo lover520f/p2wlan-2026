@@ -227,6 +227,17 @@ impl PeerManager {
             .then_some(public_key)
     }
 
+    /// Returns the peer's recorded public key from the identity ledger if known,
+    /// regardless of whether the peer is currently online or offline.
+    #[allow(dead_code)]
+    pub(crate) fn peer_identity_recorded_public_key_sync(&self, node_id: &str) -> Option<String> {
+        self.remote_identity_ledger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(node_id)
+            .map(|identity| identity.public_key.clone())
+    }
+
     pub(crate) fn signal_sender_identity_matches_peer_sync(
         &self,
         node_id: &str,
@@ -743,16 +754,68 @@ impl PeerManager {
             .remote_nat_profile
             .as_ref()
             .and_then(|profile| profile.generation);
+        let previous_remote_profile_lifecycle = conn
+            .remote_nat_profile
+            .as_ref()
+            .and_then(|profile| profile.registration_lifecycle);
+        let previous_remote_profile_observation = conn
+            .remote_nat_profile
+            .as_ref()
+            .and_then(|profile| profile.observation_sequence);
         let remote_profile_accepted =
             conn.update_remote_nat_profile(&info.nat_type, signaled_endpoint);
         let remote_profile_generation = conn
             .remote_nat_profile
             .as_ref()
             .and_then(|profile| profile.generation);
-        if remote_profile_accepted
-            && previous_remote_profile_generation != remote_profile_generation
+        let remote_profile_lifecycle = conn
+            .remote_nat_profile
+            .as_ref()
+            .and_then(|profile| profile.registration_lifecycle);
+        let remote_profile_observation = conn
+            .remote_nat_profile
+            .as_ref()
+            .and_then(|profile| profile.observation_sequence);
+        let mut recovery_reopen_reason_after_lock = None;
+        let lifecycle_changed = previous_remote_profile_lifecycle != remote_profile_lifecycle;
+        let generation_changed = previous_remote_profile_generation != remote_profile_generation;
+        let observation_advanced = !lifecycle_changed
+            && !generation_changed
+            && match (
+                previous_remote_profile_observation,
+                remote_profile_observation,
+            ) {
+                (Some(previous), Some(current)) => current > previous,
+                (None, Some(_)) => true,
+                _ => false,
+            };
+        if info.online
+            && remote_profile_accepted
+            && (lifecycle_changed || generation_changed || observation_advanced)
         {
-            clear_hard_hard_after_lock = true;
+            // Capability or registration replacement invalidates an active
+            // fresh-mapping rendezvous. A same-capability `o=` advance is
+            // intentionally lighter: it renews evidence and grants the
+            // bounded recovery epoch another attempt without tearing down a
+            // healthy Direct path or rekeying an encrypted session.
+            if lifecycle_changed || generation_changed {
+                clear_hard_hard_after_lock = true;
+            }
+            if previous_remote_profile_generation.is_some()
+                || remote_profile_generation.is_some()
+                || previous_remote_profile_lifecycle.is_some()
+                || remote_profile_lifecycle.is_some()
+                || previous_remote_profile_observation.is_some()
+                || remote_profile_observation.is_some()
+            {
+                recovery_reopen_reason_after_lock = Some(if lifecycle_changed {
+                    "remote_nat_registration_lifecycle_advanced"
+                } else if generation_changed {
+                    "remote_nat_profile_generation_advanced"
+                } else {
+                    "remote_nat_profile_observation_advanced"
+                });
+            }
         }
         if let Some(addr) = signaled_endpoint {
             conn.ensure_candidate_pair(addr, generation);
@@ -845,6 +908,9 @@ impl PeerManager {
         }
         if let Some(reason) = unquarantine_after_lock {
             self.unquarantine_peer(&info.node_id, reason).await;
+        }
+        if let Some(reason) = recovery_reopen_reason_after_lock {
+            self.recovery_reopen_on_evidence(&info.node_id, reason).await;
         }
         PeerUpdate {
             is_new,
