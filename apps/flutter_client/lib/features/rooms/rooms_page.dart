@@ -369,9 +369,8 @@ class _RoomsPageState extends State<RoomsPage> {
   }
 
   void _notify(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<bool> _confirm(String title, String message) async {
@@ -1743,9 +1742,9 @@ class _RoomsPageState extends State<RoomsPage> {
                           child: Semantics(
                             liveRegion: true,
                             child: Card(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.errorContainer,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .errorContainer,
                               child: Padding(
                                 padding: const EdgeInsets.all(16),
                                 child: Row(

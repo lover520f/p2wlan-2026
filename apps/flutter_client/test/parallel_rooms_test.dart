@@ -336,9 +336,9 @@ void main() {
 
         expect(manager.session(room(1).id), isNull);
         expect(manager.allRecentRoomProfileIds, contains(profileId));
-        final summary =
-            jsonDecode(manager.exportStatusSummaries()[profileId]!)
-                as Map<String, dynamic>;
+        final summary = jsonDecode(
+          manager.exportStatusSummaries()[profileId]!,
+        ) as Map<String, dynamic>;
         expect(summary['network_id'], room(1).id);
         expect(summary['profile_id'], profileId);
         expect(summary['phase'], failure == 'start' ? 'failed' : 'unavailable');
