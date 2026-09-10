@@ -1,6 +1,8 @@
 /// A raw IP packet routed to a specific virtual-network peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboundPacket {
+    /// Authorization captured before queueing; checked again at the socket writer.
+    pub room_authorization: Option<crate::rooms::RoomSendPermit>,
     /// Destination peer node ID.
     pub peer_id: String,
     /// Destination virtual IP.
@@ -328,9 +330,13 @@ where
             return Ok(());
         };
 
-        if !self.room_allows(&peer_id, &dst_ip, &src_ip) {
-            return Ok(());
-        }
+        let room_authorization = match self.room_authorization.as_ref().filter(|auth| auth.enabled()) {
+            Some(auth) => match auth.send_permit(&peer_id, &dst_ip, &src_ip) {
+                Some(permit) => Some(permit),
+                None => return Ok(()),
+            },
+            None => None,
+        };
 
         let routed_packet = if src_ip == self.tun.address() {
             packet[..total_len].to_vec()
@@ -367,7 +373,11 @@ where
             "tx_tun_to_route_ready_us",
             route_ready.duration_since(tun_read_completed),
         );
+        if room_authorization.as_ref().is_some_and(|permit| !permit.is_valid()) {
+            return Ok(());
+        }
         let mut routed = OutboundPacket {
+            room_authorization,
             peer_id: peer_id.clone(),
             dst_ip: dst_ip.clone(),
             packet: routed_packet,
@@ -394,10 +404,12 @@ where
                 .max_capacity()
                 .saturating_sub(self.outbound_tx.capacity()) as u64,
         );
-        self.outbound_tx
-            .send(routed)
-            .await
+        let slot = self.outbound_tx.reserve().await
             .map_err(|_| DaemonError::Network("outbound packet channel closed".to_string()))?;
+        if routed.room_authorization.as_ref().is_some_and(|permit| !permit.is_valid()) {
+            return Ok(());
+        }
+        slot.send(routed);
         let queue_wait = queue_started.elapsed();
         profiler.record(sampled, "tx_outbound_queue_wait_us", queue_wait);
         // Preserve the Phase 4 name for existing log consumers while the new

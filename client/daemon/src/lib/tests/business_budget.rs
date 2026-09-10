@@ -885,6 +885,7 @@ async fn direct_business_would_block_is_paced_deadline_bounded_and_peer_isolated
     let mut once = udp.inject_direct_business_would_block_for_test("peer-a", 1);
     dataplane_tx
         .send(OutboundPacket {
+            room_authorization: None,
             peer_id: "peer-a".to_string(),
             dst_ip: "10.20.0.2".to_string(),
             packet: business_budget_ipv4_packet(256, 21),
@@ -942,6 +943,7 @@ async fn direct_business_would_block_is_paced_deadline_bounded_and_peer_isolated
         udp.inject_direct_business_would_block_for_test("peer-a", 1024);
     dataplane_tx
         .send(OutboundPacket {
+            room_authorization: None,
             peer_id: "peer-a".to_string(),
             dst_ip: "10.20.0.2".to_string(),
             packet: business_budget_ipv4_packet(256, 22),
@@ -970,6 +972,7 @@ async fn direct_business_would_block_is_paced_deadline_bounded_and_peer_isolated
     .await;
     dataplane_tx
         .send(OutboundPacket {
+            room_authorization: None,
             peer_id: "peer-b".to_string(),
             dst_ip: "10.20.0.3".to_string(),
             packet: Ipv4Packet::build_icmp_echo_request(
@@ -1137,6 +1140,7 @@ async fn direct_business_ipv6_budget_floor_is_fail_closed_without_invalid_ptb() 
     // instead of clamping the advertised field to 1280.
     dataplane_tx
         .send(OutboundPacket {
+            room_authorization: None,
             peer_id: "peer-v6".to_string(),
             dst_ip: "fd00::2".to_string(),
             packet: business_budget_ipv6_packet(256, 17),
@@ -1183,6 +1187,7 @@ async fn direct_business_ipv6_budget_floor_is_fail_closed_without_invalid_ptb() 
     let oversize = business_budget_ipv6_packet(1281, 17);
     dataplane_tx
         .send(OutboundPacket {
+            room_authorization: None,
             peer_id: "peer-v6".to_string(),
             dst_ip: "fd00::2".to_string(),
             packet: oversize.clone(),

@@ -27,6 +27,7 @@ const RELAY_TICKET_REFRESH_MARGIN_SECS: i64 = 60;
 
 include!("relay/core.rs");
 include!("relay/transport.rs");
+include!("relay/rendezvous.rs");
 
 #[cfg(test)]
 mod tests {

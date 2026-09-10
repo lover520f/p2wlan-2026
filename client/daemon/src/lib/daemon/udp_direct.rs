@@ -341,10 +341,7 @@ async fn run_udp_direct_instance(
     // Peer lifecycle transitions revoke heartbeat leases synchronously. The
     // transport owns the lease registry, so the callback only sends the
     // cancellation signal and never performs async work under peer locks.
-    let heartbeat_cancel_udp = udp.clone();
-    peers.set_relay_backoff_heartbeat_cancel_hook(std::sync::Arc::new(move |peer_id| {
-        heartbeat_cancel_udp.cancel_relay_backoff_heartbeat(peer_id);
-    }));
+    peers.set_relay_backoff_heartbeat_cancel_hook(udp.relay_backoff_heartbeat_cancel_hook());
     // Publication is intentionally before the initial STUN/candidate lock.
     // A refresh can hold that lock while a failed socket is rebound; inbound
     // WireGuard must nevertheless see the replacement immediately.
@@ -1196,6 +1193,7 @@ async fn run_dplpmtud_worker(
                     transport
                         .encrypt_and_emit_outbound_with_lock_timeout_typed(
                             OutboundPacket {
+                                room_authorization: None,
                                 peer_id: peer_id.clone(),
                                 dst_ip: peer_virtual_ip.to_string(),
                                 packet: plaintext,

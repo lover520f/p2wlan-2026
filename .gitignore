@@ -54,6 +54,7 @@ research/nat-traversal-paper/
 docs/*
 !docs/linux-cli.md
 !docs/room-device-controls.md
+!docs/relay-lifecycle-and-authorization.md
 
 # Staging deployment templates (kept on disk, never published)
 deploy/staging/*.env.example

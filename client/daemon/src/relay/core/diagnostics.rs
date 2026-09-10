@@ -21,6 +21,12 @@ pub struct RelayCandidateDiagnostics {
 pub struct RelaySelectionDiagnostics {
     pub selected_region: Option<String>,
     pub selected_endpoint: Option<String>,
+    /// Live physical registrations behind the selected logical relay transport.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rendezvous_endpoints: Vec<String>,
+    /// Observed per-peer physical routes; encrypted validation remains mandatory.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub rendezvous_peer_routes: HashMap<String, String>,
     pub selected_connect_latency_ms: Option<u64>,
     pub selected_last_pong_at_unix_ms: Option<u64>,
     pub selected_last_pong_age_ms: Option<u64>,

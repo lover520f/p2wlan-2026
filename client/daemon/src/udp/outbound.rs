@@ -1302,6 +1302,16 @@ impl UdpTransport {
         }
     }
 
+    pub(crate) fn relay_backoff_heartbeat_cancel_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
+        // The callback must not retain a transport (and its sockets/PeerManager).
+        let registry = Arc::downgrade(&self.relay_backoff_heartbeats);
+        Arc::new(move |peer_id| {
+            if let Some(registry) = registry.upgrade() {
+                Self::cancel_heartbeat_in_registry(&registry, peer_id);
+            }
+        })
+    }
+
     /// Cancel a peer's heartbeat immediately.
     ///
     /// The lease is moved from the send-capable set to the quitting set
@@ -1309,9 +1319,13 @@ impl UdpTransport {
     /// fails from that instant, and a replacement can only be requested by a
     /// caller or a pending restart after the old worker has confirmed exit.
     /// Returns whether an active lease was revoked.
+    #[cfg(test)]
     pub(crate) fn cancel_relay_backoff_heartbeat(&self, peer_id: &str) -> bool {
-        let mut registry = self
-            .relay_backoff_heartbeats
+        Self::cancel_heartbeat_in_registry(&self.relay_backoff_heartbeats, peer_id)
+    }
+
+    fn cancel_heartbeat_in_registry(registry: &RelayBackoffHeartbeatState, peer_id: &str) -> bool {
+        let mut registry = registry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(lease) = registry.active.remove(peer_id) else {
@@ -1729,9 +1743,14 @@ impl UdpTransport {
         packet: &EncryptedPeerPacket,
         endpoint: SocketAddr,
     ) -> Result<usize> {
-        let sent = socket
-            .send_to(&packet.wire_bytes, endpoint)
-            .await
+        let sent = std::future::poll_fn(|cx| {
+            // Re-evaluate on EVERY readiness poll, including after socket backpressure.
+            if packet.room_authorization.as_ref().is_some_and(|permit| !permit.is_valid()) {
+                return std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied, "room send authorization expired or revoked")));
+            }
+            socket.poll_send_to(cx, &packet.wire_bytes, endpoint)
+        }).await
             .map_err(|e| {
                 if is_local_packet_too_large(&e) {
                     DaemonError::UdpPacketTooLarge {
@@ -1778,9 +1797,14 @@ impl UdpTransport {
         packet: &EncryptedPeerPacket,
         endpoint: SocketAddr,
     ) -> std::result::Result<(), crate::dplpmtud::DplpmtudProbeSendFailure> {
-        let sent = socket
-            .send_to(&packet.wire_bytes, endpoint)
-            .await
+        let sent = std::future::poll_fn(|cx| {
+            // Re-evaluate on EVERY readiness poll, including after socket backpressure.
+            if packet.room_authorization.as_ref().is_some_and(|permit| !permit.is_valid()) {
+                return std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied, "room send authorization expired or revoked")));
+            }
+            socket.poll_send_to(cx, &packet.wire_bytes, endpoint)
+        }).await
             .map_err(|error| {
                 if is_local_packet_too_large(&error) {
                     crate::dplpmtud::DplpmtudProbeSendFailure::LocalPacketTooLarge

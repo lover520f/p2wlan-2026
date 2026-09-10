@@ -268,7 +268,7 @@ pub(crate) async fn select_relay_with_cooldowns(
     // or leak a connection.  Candidates that never resolved are recorded as
     // cancelled so diagnostics distinguish success / failed / cancelled /
     // timeout for failover analysis.
-    tasks.abort_all();
+    tasks.shutdown().await;
     for candidate in &candidates {
         let candidate_diagnostics = &mut diagnostics.candidates[candidate.index];
         if candidate_diagnostics.outcome.is_none() {
@@ -282,13 +282,27 @@ pub(crate) async fn select_relay_with_cooldowns(
         }
     }
 
-    if let Some(selected) = connected.into_iter().next() {
+    let mut connected = connected.into_iter();
+    if let Some(selected) = connected.next() {
+        // Dispose initial losing connects before the persistent workers register.
+        drop(connected);
+        let plan = Arc::new(RelayRendezvousPlan {
+            candidates: candidates.clone(),
+            node_id: node_id.to_string(),
+            peers,
+            ticket_cache,
+            static_relay_ticket,
+            allow_insecure_plaintext,
+            ca_cert_path,
+            connect_timeout: selection_timeout,
+        });
+        let (transport, relay_rx) = selected.transport.with_rendezvous(selected.relay_rx, plan);
         diagnostics.selected_region = Some(selected.candidate.region.clone());
         diagnostics.selected_endpoint = Some(selected.candidate.endpoint.clone());
-        diagnostics.selected_connect_latency_ms = Some(selected.transport.connect_latency_ms);
+        diagnostics.selected_connect_latency_ms = Some(transport.connect_latency_ms);
         RelaySelectionOutcome {
-            transport: Some(selected.transport),
-            relay_rx: Some(selected.relay_rx),
+            transport: Some(transport),
+            relay_rx: Some(relay_rx),
             diagnostics,
         }
     } else {

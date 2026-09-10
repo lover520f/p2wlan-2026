@@ -15,12 +15,15 @@ type networkNodeKey struct {
 }
 
 type peer struct {
-	id        string // node_id (for logging)
-	networkID string
-	deviceID  string
-	conn      net.Conn
-	send      chan []byte
-	done      chan struct{}
+	id           string // node_id (for logging)
+	networkID    string
+	deviceID     string
+	credentialID string
+	ticketJTI    string
+	revoked      atomic.Bool
+	conn         net.Conn
+	send         chan []byte
+	done         chan struct{}
 	// writeFailed is set when the per-peer writer goroutine fails to write a
 	// frame; handleConn's deferred close logging uses it as the disconnect
 	// cause when a write failure raced the read loop's classification.
@@ -40,15 +43,23 @@ func newHub() *hub {
 }
 
 func (h *hub) register(p *peer, networkID, nodeID string) {
+	if old := h.registerSwap(p, networkID, nodeID); old != nil {
+		_ = old.conn.Close()
+	}
+}
+
+// registerSwap publishes a connection without doing network I/O under locks.
+func (h *hub) registerSwap(p *peer, networkID, nodeID string) *peer {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	key := networkNodeKey{networkID: networkID, nodeID: nodeID}
-	if old := h.peers[key]; old != nil && old != p {
-		_ = old.conn.Close()
-	}
-	p.id = nodeID
-	p.networkID = networkID
+	old := h.peers[key]
+	p.id, p.networkID = nodeID, networkID
 	h.peers[key] = p
+	if old == p {
+		return nil
+	}
+	return old
 }
 
 func (h *hub) unregister(p *peer) {
@@ -83,7 +94,7 @@ func (h *hub) count() int {
 // Uses network-scoped lookup: source and destination must be in the same network.
 func (h *hub) forward(srcNetwork, srcID, dstID string, data []byte, maxFramePayload int) (uint16, string) {
 	dst := h.lookup(srcNetwork, dstID)
-	if dst == nil {
+	if dst == nil || dst.revoked.Load() {
 		// Return 404 even if peer exists in a different network — do not leak
 		// that information to the sender.
 		return 404, "peer not found: " + dstID

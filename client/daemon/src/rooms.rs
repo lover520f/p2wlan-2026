@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -14,6 +15,33 @@ struct RoomSnapshot {
     local_ip: String,
     peers: HashMap<String, String>,
     expires_at: Instant,
+    live: Arc<AtomicBool>,
+}
+
+/// A queue entry may never inherit a renewed lease or a later re-authorization.
+#[derive(Debug, Clone)]
+pub struct RoomSendPermit {
+    live: Arc<AtomicBool>,
+    expires_at: Instant,
+}
+
+impl PartialEq for RoomSendPermit {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.live, &other.live) && self.expires_at == other.expires_at
+    }
+}
+impl Eq for RoomSendPermit {}
+
+impl RoomSendPermit {
+    pub(crate) fn is_valid(&self) -> bool {
+        self.live.load(Ordering::Acquire) && Instant::now() < self.expires_at
+    }
+}
+
+impl Drop for RoomAuthorization {
+    fn drop(&mut self) {
+        self.invalidate();
+    }
 }
 
 impl RoomAuthorization {
@@ -30,7 +58,9 @@ impl RoomAuthorization {
 
     pub fn invalidate(&self) {
         if let Ok(mut snapshot) = self.snapshot.lock() {
-            *snapshot = None;
+            if let Some(old) = snapshot.take() {
+                old.live.store(false, Ordering::Release);
+            }
         }
     }
 
@@ -76,12 +106,47 @@ impl RoomAuthorization {
         let Ok(mut snapshot) = self.snapshot.lock() else {
             return false;
         };
+        let live = match snapshot.as_ref() {
+            Some(old)
+                if old.local_ip == local_ip
+                    && old.peers == allowed
+                    && old.expires_at > Instant::now() =>
+            {
+                old.live.clone()
+            }
+            Some(old) => {
+                old.live.store(false, Ordering::Release);
+                Arc::new(AtomicBool::new(true))
+            }
+            None => Arc::new(AtomicBool::new(true)),
+        };
         *snapshot = Some(RoomSnapshot {
+            live,
             local_ip: local_ip.to_owned(),
             peers: allowed,
             expires_at,
         });
         true
+    }
+
+    pub(crate) fn send_permit(
+        &self,
+        peer_id: &str,
+        peer_ip: &str,
+        local_ip: &str,
+    ) -> Option<RoomSendPermit> {
+        let snapshot = self.snapshot.lock().ok()?;
+        let snapshot = snapshot.as_ref()?;
+        if snapshot.expires_at <= Instant::now()
+            || snapshot.local_ip != local_ip
+            || snapshot.peers.get(peer_id).is_none_or(|ip| ip != peer_ip)
+        {
+            return None;
+        }
+        Some(RoomSendPermit {
+            live: snapshot.live.clone(),
+            expires_at: snapshot.expires_at,
+        })
     }
 
     pub fn allows(&self, peer_id: &str, peer_ip: &str, local_ip: &str) -> bool {
@@ -182,5 +247,28 @@ mod tests {
         ] {
             assert!(!auth.replace("10.21.1.2", peers, Instant::now(), 30));
         }
+    }
+}
+
+#[cfg(test)]
+mod send_permit_tests {
+    use super::*;
+
+    #[test]
+    fn queued_permit_cannot_inherit_renewal_or_reauthorization() {
+        let auth = RoomAuthorization::new("room-permit");
+        let roster = || [("b".to_string(), "10.21.1.3".to_string())];
+        let started = Instant::now();
+        assert!(auth.replace("10.21.1.2", roster(), started, 1));
+        let permit = auth.send_permit("b", "10.21.1.3", "10.21.1.2").unwrap();
+        assert!(auth.replace("10.21.1.2", roster(), started, 30));
+        assert_eq!(permit.expires_at, started + Duration::from_secs(1));
+        auth.invalidate();
+        assert!(auth.replace("10.21.1.2", roster(), started, 30));
+        assert!(!permit.is_valid());
+        let fresh = auth.send_permit("b", "10.21.1.3", "10.21.1.2").unwrap();
+        assert!(fresh.is_valid());
+        drop(auth);
+        assert!(!fresh.is_valid());
     }
 }

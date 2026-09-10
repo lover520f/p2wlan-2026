@@ -15,6 +15,7 @@ async fn sends_encrypted_packet_to_peer_endpoint() {
 
     let sent = transport
         .send_packet(&EncryptedPeerPacket {
+            room_authorization: None,
             peer_id: "peer-b".to_string(),
             dst_ip: "10.20.0.2".to_string(),
             wire_bytes: payload.clone(),
@@ -44,6 +45,7 @@ async fn drops_packet_when_endpoint_is_unknown() {
 
     let sent = transport
         .send_packet(&EncryptedPeerPacket {
+            room_authorization: None,
             peer_id: "peer-b".to_string(),
             dst_ip: "10.20.0.2".to_string(),
             wire_bytes: vec![4, 1, 2, 3],
@@ -82,6 +84,7 @@ async fn run_outbound_sends_wireguard_datagram_that_peer_can_decrypt() {
     let wire_bytes = node_a_session.encrypt_to_bytes(&ip_packet).unwrap();
 
     tx.send(EncryptedPeerPacket {
+        room_authorization: None,
         peer_id: "peer-b".to_string(),
         dst_ip: "10.20.0.2".to_string(),
         wire_bytes,

@@ -13,6 +13,7 @@ pub struct RelayTransport {
     /// an old Wi-Fi/Ethernet interface is replaced promptly after handover.
     route_signature: Vec<String>,
     client: Arc<RelayClient>,
+    rendezvous: Option<Arc<RelayRendezvous>>,
     /// Synchronous lifetime gate for callbacks queued in the relay client's
     /// writer.  A same-endpoint make-before-break replacement does not change
     /// the peer/network generation, so those callbacks must also be retired
@@ -148,6 +149,7 @@ impl RelayTransport {
                 connect_latency_ms: duration_millis(started.elapsed()),
                 route_signature,
                 client: Arc::new(client),
+                rendezvous: None,
                 write_boundaries_live: Arc::new(std::sync::Mutex::new(true)),
                 peers,
                 ticket_audience: None,
@@ -204,6 +206,7 @@ impl RelayTransport {
             // not arm the production route watcher.
             route_signature: Vec::new(),
             client: Arc::new(p2pnet_relay::client::RelayClient::new_for_test()),
+            rendezvous: None,
             write_boundaries_live: Arc::new(std::sync::Mutex::new(true)),
             peers,
             ticket_audience: None,
@@ -247,6 +250,9 @@ impl RelayTransport {
     pub fn abort_writer(&self) {
         self.retire_write_boundaries();
         self.client.abort();
+        if let Some(rendezvous) = &self.rendezvous {
+            rendezvous.stop();
+        }
     }
 
     /// Retire callbacks queued by this exact relay connection.  The caller
@@ -296,32 +302,54 @@ impl RelayTransport {
             relay_endpoint = %self.relay_endpoint,
             "opaque encrypted frame submitted to the relay client's bounded command queue"
         );
-        let send_result = match write_boundary {
-            Some(write_boundary) => {
-                let write_boundaries_live = Arc::clone(&self.write_boundaries_live);
-                self.client
-                    .send_data_with_write_boundary(
-                        &packet.peer_id,
-                        &packet.wire_bytes,
-                        move |sent_at| {
-                            let live = write_boundaries_live
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner());
-                            if !*live {
-                                return false;
-                            }
-                            // Keep the transport-incarnation guard while the
-                            // manager installs its expectation. Replacement
-                            // retirement then cannot race past registration.
-                            write_boundary(sent_at)
-                        },
+        let clients = self
+            .rendezvous
+            .as_ref()
+            .map(|pool| pool.send_clients(&packet.peer_id))
+            .unwrap_or_else(|| vec![self.client.clone()]);
+        let boundary = Arc::new(std::sync::Mutex::new((write_boundary, None::<bool>)));
+        let send_result = if clients.len() == 1 {
+            guarded_relay_write(
+                &clients[0],
+                packet,
+                self.write_boundaries_live.clone(),
+                boundary,
+            )
+            .await
+        } else {
+            let mut writes = JoinSet::new();
+            for client in clients {
+                let live = self.write_boundaries_live.clone();
+                let boundary = boundary.clone();
+                let packet = packet.clone();
+                writes.spawn(async move {
+                    match timeout(
+                        Duration::from_secs(1),
+                        guarded_relay_write(&client, &packet, live, boundary),
                     )
                     .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => {
+                            client.abort();
+                            Err(p2pnet_relay::RelayError::WriterStoppedBeforeWrite)
+                        }
+                    }
+                });
             }
-            None => {
-                self.client
-                    .send_data(&packet.peer_id, &packet.wire_bytes)
-                    .await
+            let mut succeeded = false;
+            let mut last_error = p2pnet_relay::RelayError::WriterStoppedBeforeAccept;
+            while let Some(result) = writes.join_next().await {
+                match result {
+                    Ok(Ok(())) => succeeded = true,
+                    Ok(Err(error)) => last_error = error,
+                    Err(_) => {}
+                }
+            }
+            if succeeded {
+                Ok(())
+            } else {
+                Err(last_error)
             }
         };
         if let Err(error) = send_result {
@@ -457,6 +485,12 @@ impl RelayTransport {
                         if let Some(ref diags) = relay_selection {
                             let mut d = diags.write().await;
                             record_relay_pong(&mut d, received_at_ms, round_trip_time);
+                            if let Some(pool) = &self.rendezvous {
+                                let routes = pool.routes.lock().unwrap_or_else(|p| p.into_inner());
+                                d.rendezvous_endpoints = routes.clients.keys().cloned().collect();
+                                d.rendezvous_endpoints.sort();
+                                d.rendezvous_peer_routes = routes.peers.clone();
+                            }
                         }
                         debug!(
                             "Received matched ping-pong keepalive response from relay {} with token {} rtt={}ms",
@@ -524,4 +558,35 @@ impl RelayTransport {
         );
         Ok(())
     }
+}
+
+type SharedRelayWriteBoundary = Arc<
+    std::sync::Mutex<(
+        Option<Box<dyn FnOnce(Instant) -> bool + Send + 'static>>,
+        Option<bool>,
+    )>,
+>;
+
+async fn guarded_relay_write(
+    client: &RelayClient,
+    packet: &EncryptedPeerPacket,
+    live: Arc<std::sync::Mutex<bool>>,
+    boundary: SharedRelayWriteBoundary,
+) -> std::result::Result<(), p2pnet_relay::RelayError> {
+    let permit = packet.room_authorization.clone();
+    client
+        .send_data_with_write_boundary(&packet.peer_id, &packet.wire_bytes, move |sent_at| {
+            let live = live.lock().unwrap_or_else(|p| p.into_inner());
+            if !*live || permit.as_ref().is_some_and(|p| !p.is_valid()) {
+                return false;
+            }
+            let mut boundary = boundary.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(accepted) = boundary.1 {
+                return accepted;
+            }
+            let accepted = boundary.0.take().is_none_or(|hook| hook(sent_at));
+            boundary.1 = Some(accepted);
+            accepted
+        })
+        .await
 }

@@ -164,8 +164,9 @@ func registerDeviceControlRoutes(mux *http.ServeMux, authService *auth.Service, 
 	}
 	mux.HandleFunc("DELETE /api/v1/devices/credential", deviceSessionAuth(apiServer.RevokeCurrentDeviceCredential))
 
-	// Relay ticket endpoint (device-credential-only, rate limited).
-	mux.HandleFunc("POST /api/v1/relay/tickets", deviceSessionAuth(rateLimit(apiServer.CreateRelayTicket, 5, time.Minute)))
+	// Relay tickets are rate limited per authenticated device inside the handler.
+	// A shared NAT must not collapse independent devices into one five-ticket quota.
+	mux.HandleFunc("POST /api/v1/relay/tickets", deviceSessionAuth(apiServer.CreateRelayTicket))
 	mux.HandleFunc("GET /api/v1/relay/revocations", apiServer.RelayRevocations)
 
 	// Backward-compat: endpoint update accepts user JWT (anyAuth).

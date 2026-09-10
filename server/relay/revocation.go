@@ -117,12 +117,13 @@ func (s *RelayServer) applyRevocationSnapshot(snapshot relayRevocationFeedSnapsh
 		return fmt.Errorf("revocation snapshot version must not be negative")
 	}
 	s.revocationMu.Lock()
-	defer s.revocationMu.Unlock()
 	if snapshot.Version < s.revocationVersion {
+		version := s.revocationVersion
+		s.revocationMu.Unlock()
 		return fmt.Errorf(
 			"revocation snapshot rollback: version %d is older than %d",
 			snapshot.Version,
-			s.revocationVersion,
+			version,
 		)
 	}
 
@@ -151,5 +152,50 @@ func (s *RelayServer) applyRevocationSnapshot(snapshot relayRevocationFeedSnapsh
 	if snapshot.Version > s.revocationVersion {
 		s.revocationVersion = snapshot.Version
 	}
+	// Lock order is revocationMu -> hub.mu, shared with authenticated registration.
+	// Mark and unpublish before releasing either lock; close sockets afterwards.
+	var retired []*peer
+	if s.hub != nil {
+		s.hub.mu.Lock()
+		for key, p := range s.hub.peers {
+			if p.ticketJTI != "" && s.identityRevokedLocked(p.deviceID, p.credentialID, p.ticketJTI) {
+				p.revoked.Store(true)
+				delete(s.hub.peers, key)
+				retired = append(retired, p)
+			}
+		}
+		s.hub.mu.Unlock()
+	}
+	s.revocationMu.Unlock()
+	for _, p := range retired {
+		_ = p.conn.Close()
+	}
 	return nil
+}
+
+// Caller holds revocationMu. Static revocations are immutable after startup.
+func (s *RelayServer) identityRevokedLocked(deviceID, credentialID, jti string) bool {
+	_, staticDevice := s.revokedDeviceIDs[deviceID]
+	_, staticTicket := s.revokedTicketJTIs[jti]
+	_, device := s.onlineRevokedDeviceIDs[deviceID]
+	_, credential := s.onlineRevokedCredentialIDs[credentialID]
+	_, ticket := s.onlineRevokedTicketJTIs[jti]
+	return staticDevice || staticTicket || device || ticket || (credentialID != "" && credential)
+}
+
+// Recheck at publication so a revocation arriving after signature verification
+// cannot be missed by both the registration and the snapshot's active-peer scan.
+func (s *RelayServer) registerAuthenticated(p *peer, claims *relayTicketClaims) bool {
+	s.revocationMu.RLock()
+	if s.identityRevokedLocked(claims.DeviceID, claims.CredentialID, claims.ID) {
+		s.revocationMu.RUnlock()
+		return false
+	}
+	p.deviceID, p.credentialID, p.ticketJTI = claims.DeviceID, claims.CredentialID, claims.ID
+	old := s.hub.registerSwap(p, claims.NetworkID, claims.NodeID)
+	s.revocationMu.RUnlock()
+	if old != nil {
+		_ = old.conn.Close()
+	}
+	return true
 }

@@ -107,6 +107,7 @@ async fn test_ipv6_underlay_dataplane_roundtrip() {
         .expect("session A encrypt");
 
     let packet_to_b = EncryptedPeerPacket {
+        room_authorization: None,
         peer_id: "node-b".to_string(),
         dst_ip: virtual_ip_b.to_string(),
         wire_bytes: wire_bytes_req,
@@ -163,6 +164,7 @@ async fn test_ipv6_underlay_dataplane_roundtrip() {
         .expect("session B encrypt reply");
 
     let packet_to_a = EncryptedPeerPacket {
+        room_authorization: None,
         peer_id: "node-a".to_string(),
         dst_ip: virtual_ip_a.to_string(),
         wire_bytes: wire_bytes_reply,
@@ -221,6 +223,7 @@ async fn test_ipv6_underlay_dataplane_roundtrip() {
         );
         let wire = session_a.encrypt_to_bytes(&req).expect("burst encrypt");
         let pkt = EncryptedPeerPacket {
+            room_authorization: None,
             peer_id: "node-b".to_string(),
             dst_ip: virtual_ip_b.to_string(),
             wire_bytes: wire,
@@ -293,6 +296,7 @@ async fn test_dual_stack_coexistence_and_socket_isolation() {
     );
     let wire_v4 = session_a.encrypt_to_bytes(&v4_packet).unwrap();
     let pkt_v4 = EncryptedPeerPacket {
+        room_authorization: None,
         peer_id: "node-b".to_string(),
         dst_ip: "10.20.0.3".to_string(),
         wire_bytes: wire_v4,
@@ -320,6 +324,7 @@ async fn test_dual_stack_coexistence_and_socket_isolation() {
     );
     let wire_v6 = session_a.encrypt_to_bytes(&v6_packet).unwrap();
     let pkt_v6 = EncryptedPeerPacket {
+        room_authorization: None,
         peer_id: "node-b".to_string(),
         dst_ip: "10.20.0.3".to_string(),
         wire_bytes: wire_v6,
@@ -360,6 +365,7 @@ async fn test_dual_stack_coexistence_and_socket_isolation() {
     );
     let wire_rep_v4 = session_b.encrypt_to_bytes(&reply_v4).unwrap();
     let pkt_rep_v4 = EncryptedPeerPacket {
+        room_authorization: None,
         peer_id: "node-a".to_string(),
         dst_ip: "10.20.0.2".to_string(),
         wire_bytes: wire_rep_v4,
@@ -387,6 +393,7 @@ async fn test_dual_stack_coexistence_and_socket_isolation() {
     );
     let wire_rep_v6 = session_b.encrypt_to_bytes(&reply_v6).unwrap();
     let pkt_rep_v6 = EncryptedPeerPacket {
+        room_authorization: None,
         peer_id: "node-a".to_string(),
         dst_ip: "10.20.0.2".to_string(),
         wire_bytes: wire_rep_v6,

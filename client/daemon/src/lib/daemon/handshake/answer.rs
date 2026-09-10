@@ -372,6 +372,7 @@ impl Daemon {
                 let relay = relay_transport.read().await.clone();
 
                 let build_packet = || OutboundPacket {
+                    room_authorization: None,
                     peer_id: peer_id.clone(),
                     dst_ip: peer_virtual_ip.clone(),
                     packet: Ipv4Packet::build_icmp_echo_request(

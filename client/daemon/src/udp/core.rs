@@ -673,6 +673,9 @@ impl UdpTransport {
         let attempted = self.dplpmtud.with_current_direct_business_token(
             &prepared.token,
             || {
+                if packet.room_authorization.as_ref().is_some_and(|permit| !permit.is_valid()) {
+                    return Err(DirectBusinessUdpSendError::Io("room send authorization expired or revoked".into()));
+                }
                 if self.inbound_publication_owner() != prepared.token.udp_publication_owner
                     || self.transport_instance_id
                         != prepared.token.path_identity.socket.transport_instance_id

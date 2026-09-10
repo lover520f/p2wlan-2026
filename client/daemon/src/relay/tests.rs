@@ -96,6 +96,7 @@ async fn relay_transport_sends_encrypted_datagrams() {
     let payload = vec![4, 1, 2, 3, 4, 5];
     relay_a
         .send_packet(&EncryptedPeerPacket {
+            room_authorization: None,
             peer_id: "node-b".to_string(),
             dst_ip: "10.20.0.2".to_string(),
             wire_bytes: payload.clone(),
@@ -151,6 +152,7 @@ async fn replacement_retirement_rejects_old_late_writer_boundary() {
         old_transport
             .send_packet_with_write_boundary(
                 &EncryptedPeerPacket {
+                    room_authorization: None,
                     peer_id: "node-b".to_string(),
                     dst_ip: "10.20.0.2".to_string(),
                     wire_bytes: vec![4, 1, 2, 3],
@@ -204,6 +206,7 @@ async fn relay_peer_not_found_is_attributed_to_destination() {
 
     relay
         .send_packet(&EncryptedPeerPacket {
+            room_authorization: None,
             peer_id: "node-b".to_string(),
             dst_ip: "10.20.0.2".to_string(),
             wire_bytes: vec![4, 1, 2, 3],
@@ -573,3 +576,139 @@ async fn relay_selector_publishes_first_success_without_waiting_for_black_hole_c
     server.abort();
     healthy.shutdown().await;
 }
+
+#[tokio::test]
+async fn audit_different_relay_preferences_must_still_reach_peer() {
+    let one = RelayServer::start_random().await.unwrap();
+    let two = RelayServer::start_random().await.unwrap();
+    let specs = vec![
+        RelayCandidateConfig::legacy(format!("one@tcp://{}", one.addr)),
+        RelayCandidateConfig::legacy(format!("two@tcp://{}", two.addr)),
+    ];
+    let a = select_relay(
+        &specs,
+        &["one".into()],
+        Duration::from_secs(2),
+        "audit-a",
+        peer_manager(),
+        None,
+        None,
+        true,
+        None,
+    )
+    .await;
+    let b = select_relay(
+        &specs,
+        &["two".into()],
+        Duration::from_secs(2),
+        "audit-b",
+        peer_manager(),
+        None,
+        None,
+        true,
+        None,
+    )
+    .await;
+    let ta = a.transport.unwrap();
+    let tb = b.transport.unwrap();
+    assert_ne!(ta.endpoint(), tb.endpoint());
+    let mut ra = a.relay_rx.unwrap();
+    let mut rb = b.relay_rx.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    ta.send_packet(&EncryptedPeerPacket {
+        room_authorization: None,
+        peer_id: "audit-b".into(),
+        dst_ip: "10.20.0.2".into(),
+        wire_bytes: vec![4, 0, 0, 0, 1],
+        is_business: false,
+    })
+    .await
+    .unwrap();
+    let result = timeout(Duration::from_millis(500), async {
+        loop {
+            match rb.recv().await {
+                Some(p2pnet_relay::RelayMessage::Data { .. }) => return true,
+                None => return false,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    let error = timeout(Duration::from_millis(100), ra.recv()).await;
+    ta.abort_writer();
+    tb.abort_writer();
+    one.shutdown().await;
+    two.shutdown().await;
+    assert!(
+        matches!(result, Ok(true)),
+        "both relay connections succeeded but no peer data: sender={error:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn room_authorization_is_checked_at_relay_writer_boundary() {
+    let server = RelayServer::start_random().await.unwrap();
+    let (sender, _rx) = RelayTransport::connect(&server.addr.to_string(), "room-a", peer_manager())
+        .await
+        .unwrap();
+    let (_receiver, mut rx) =
+        RelayTransport::connect(&server.addr.to_string(), "room-b", peer_manager())
+            .await
+            .unwrap();
+    let auth = crate::rooms::RoomAuthorization::new("room-relay");
+    assert!(auth.replace(
+        "10.21.1.2",
+        [("room-b".into(), "10.21.1.3".into())],
+        Instant::now(),
+        30
+    ));
+    let packet = EncryptedPeerPacket {
+        room_authorization: auth.send_permit("room-b", "10.21.1.3", "10.21.1.2"),
+        peer_id: "room-b".into(),
+        dst_ip: "10.21.1.3".into(),
+        wire_bytes: vec![4, 1, 2, 3],
+        is_business: true,
+    };
+    sender.send_packet(&packet).await.unwrap();
+    assert!(matches!(rx.recv().await, Some(RelayMessage::Data { .. })));
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let notify = reached.clone();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let blocking_sender = sender.clone();
+    let mut blocking_packet = packet.clone();
+    blocking_packet.room_authorization = None;
+    let blocking = tokio::spawn(async move {
+        blocking_sender
+            .send_packet_with_write_boundary(&blocking_packet, move |_| {
+                notify.notify_one();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                true
+            })
+            .await
+    });
+    reached.notified().await;
+    let mut queued = Box::pin(sender.send_packet(&packet));
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(queued.as_mut(), cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    // The room packet is now behind the parked writer, not merely waiting
+    // to call send_packet. Its permit was valid when the command was accepted.
+    auth.invalidate();
+    release_tx.send(()).unwrap();
+    blocking.await.unwrap().unwrap();
+    assert!(matches!(
+        queued.await,
+        Err(DaemonError::RelaySend {
+            error: p2pnet_relay::RelayError::WriteBoundaryRejected,
+            ..
+        })
+    ));
+    assert!(matches!(rx.recv().await, Some(RelayMessage::Data { .. })));
+    assert!(timeout(Duration::from_millis(50), rx.recv()).await.is_err());
+    sender.abort_writer();
+    server.shutdown().await;
+}
+
+include!("tests/rendezvous.rs");

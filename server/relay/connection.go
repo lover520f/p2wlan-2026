@@ -116,7 +116,7 @@ func (s *RelayServer) handleConn(conn net.Conn) {
 		for {
 			select {
 			case frame, ok := <-p.send:
-				if !ok {
+				if !ok || p.revoked.Load() {
 					return
 				}
 				if err := writeFull(conn, frame); err != nil {
@@ -236,8 +236,11 @@ func (s *RelayServer) handleConn(conn net.Conn) {
 		}
 
 		// Register with network binding
-		p.deviceID = claims.DeviceID
-		s.hub.register(p, claims.NetworkID, nodeID)
+		if !s.registerAuthenticated(p, claims) {
+			s.recordAuthFailure(source)
+			setCloseCause("auth_revoked_at_register")
+			return
+		}
 		queue(p, makeFrame(msgRegistered, []byte(nodeID)))
 
 		// Store ticket expiry for connection lifecycle management
@@ -316,6 +319,10 @@ func (s *RelayServer) handlePostRegister(conn net.Conn, p *peer, nodeID, network
 			return
 		}
 
+		if p.revoked.Load() {
+			setCloseCause("auth_revoked")
+			return
+		}
 		switch typ {
 		case msgRegister:
 			newID := string(payload)

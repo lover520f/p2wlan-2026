@@ -3435,6 +3435,7 @@ mod tests {
             .await;
 
         let packet = EncryptedPeerPacket {
+            room_authorization: None,
             peer_id: "peer-a".to_string(),
             dst_ip: "10.20.0.2".to_string(),
             wire_bytes: vec![0; 32],
@@ -3460,6 +3461,7 @@ mod tests {
 
         let outcome = encrypt_then_send(
             OutboundPacket {
+                room_authorization: None,
                 peer_id: "peer-a".to_string(),
                 dst_ip: "10.20.0.2".to_string(),
                 packet: vec![0x45, 0x00, 0x00, 0x14],
@@ -3610,6 +3612,7 @@ mod tests {
         let counters_before = global_dataplane_profiler().fast_path_counters();
         let attempt = try_lan_direct_fast_path(
             OutboundPacket {
+                room_authorization: None,
                 peer_id: "peer-fast".to_string(),
                 dst_ip: "10.20.0.2".to_string(),
                 packet: vec![0x45, 0, 0, 20],
@@ -3644,6 +3647,7 @@ mod tests {
             .await;
         let stale_session_attempt = try_lan_direct_fast_path(
             OutboundPacket {
+                room_authorization: None,
                 peer_id: "peer-fast".to_string(),
                 dst_ip: "10.20.0.2".to_string(),
                 packet: vec![0x45, 0, 0, 20],
@@ -3686,6 +3690,7 @@ mod tests {
         queue.wait_generation = Some(0);
         queue.delivery_deadline = Some(Instant::now() - Duration::from_millis(1));
         queue.enqueue(PendingPacket::plain(OutboundPacket {
+            room_authorization: None,
             peer_id: "peer-a".to_string(),
             dst_ip: "10.20.0.2".to_string(),
             packet: vec![0x45, 0, 0, 20],
@@ -3734,6 +3739,7 @@ mod tests {
         queue.wait_generation = Some(generation);
         queue.delivery_deadline = Some(Instant::now() + OUTBOUND_DELIVERY_DEADLINE);
         queue.enqueue(PendingPacket::plain(OutboundPacket {
+            room_authorization: None,
             peer_id: "peer-a".to_string(),
             dst_ip: "10.20.0.2".to_string(),
             packet: Ipv4Packet::build_icmp_echo_request(
@@ -3787,6 +3793,7 @@ mod tests {
         let mut dropped = 0usize;
         for sequence in 0..300u16 {
             let (evicted, _) = queue.enqueue(PendingPacket::plain(OutboundPacket {
+                room_authorization: None,
                 peer_id: "peer-a".to_string(),
                 dst_ip: "10.20.0.2".to_string(),
                 packet: vec![sequence as u8; 65_535],
@@ -3811,6 +3818,7 @@ mod tests {
     fn completed_peer_flush_stays_ahead_of_live_fifo_arrivals() {
         fn packet(sequence: u8) -> OutboundPacket {
             OutboundPacket {
+                room_authorization: None,
                 peer_id: "peer-a".to_string(),
                 dst_ip: "10.20.0.2".to_string(),
                 packet: vec![sequence],

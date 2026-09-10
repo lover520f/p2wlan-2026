@@ -5034,6 +5034,7 @@ mod tests {
         );
         let duplicate_ack_encrypted = wireguard_b
             .encrypt_outbound(OutboundPacket {
+                room_authorization: None,
                 peer_id: "peer-a".to_string(),
                 dst_ip: "10.20.0.1".to_string(),
                 packet: duplicate_ack_plaintext,
@@ -5118,6 +5119,7 @@ mod tests {
         );
         let old_ack_encrypted = wireguard_b
             .encrypt_outbound(OutboundPacket {
+                room_authorization: None,
                 peer_id: "peer-a".to_string(),
                 dst_ip: "10.20.0.1".to_string(),
                 packet: old_ack_plaintext,
@@ -5264,6 +5266,7 @@ mod tests {
         .unwrap();
         let generation_encrypted = transport_a
             .encrypt_outbound(OutboundPacket {
+                room_authorization: None,
                 peer_id: "peer-b".to_string(),
                 dst_ip: "10.20.0.2".to_string(),
                 packet: generation_plaintext,
@@ -5305,6 +5308,7 @@ mod tests {
         );
         let generation_ack_encrypted = transport_b
             .encrypt_outbound(OutboundPacket {
+                room_authorization: None,
                 peer_id: "peer-a".to_string(),
                 dst_ip: "10.20.0.1".to_string(),
                 packet: generation_ack_plaintext,
@@ -5394,6 +5398,7 @@ mod tests {
             .unwrap();
             let encrypted = transport_a
                 .encrypt_outbound(OutboundPacket {
+                    room_authorization: None,
                     peer_id: "peer-b".to_string(),
                     dst_ip: "10.20.0.2".to_string(),
                     packet: plaintext,
@@ -5439,6 +5444,7 @@ mod tests {
                 );
                 let encrypted_ack = transport_b
                     .encrypt_outbound(OutboundPacket {
+                        room_authorization: None,
                         peer_id: "peer-a".to_string(),
                         dst_ip: "10.20.0.1".to_string(),
                         packet: ack_plaintext,
@@ -5485,6 +5491,7 @@ mod tests {
                     );
                     let duplicate_encrypted = transport_b
                         .encrypt_outbound(OutboundPacket {
+                            room_authorization: None,
                             peer_id: "peer-a".to_string(),
                             dst_ip: "10.20.0.1".to_string(),
                             packet: duplicate_plaintext,
@@ -5595,6 +5602,7 @@ mod tests {
         .unwrap();
         let peer_left_encrypted = transport_a
             .encrypt_outbound(OutboundPacket {
+                room_authorization: None,
                 peer_id: "peer-b".to_string(),
                 dst_ip: "10.20.0.2".to_string(),
                 packet: peer_left_plaintext,

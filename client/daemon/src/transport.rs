@@ -556,6 +556,8 @@ pub(crate) fn parse_direct_validation_token(packet: &[u8]) -> Option<DirectValid
 /// A WireGuard transport packet addressed to a peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptedPeerPacket {
+    /// Authorization captured before queueing; checked again at the socket writer.
+    pub room_authorization: Option<crate::rooms::RoomSendPermit>,
     /// Destination peer node ID.
     pub peer_id: String,
     /// Destination virtual IP, retained for diagnostics.
@@ -2197,6 +2199,7 @@ impl WireGuardTransport {
             "WireGuard counter allocated under the LAN Direct fast-path ordering lock"
         );
         let encrypted = EncryptedPeerPacket {
+            room_authorization: packet.room_authorization,
             peer_id: packet.peer_id,
             dst_ip: packet.dst_ip,
             wire_bytes,
@@ -2364,6 +2367,7 @@ impl WireGuardTransport {
         drop(sessions);
 
         Ok(Some(EncryptedPeerPacket {
+            room_authorization: packet.room_authorization,
             peer_id: packet.peer_id,
             dst_ip: packet.dst_ip,
             wire_bytes,
@@ -4327,6 +4331,7 @@ impl WireGuardTransport {
                 let result = self
                     .encrypt_and_emit_outbound_with_lock_timeout(
                         OutboundPacket {
+                            room_authorization: None,
                             peer_id: peer_id_owned.clone(),
                             dst_ip: ip.src_addr().to_string(),
                             packet: ack_packet,
@@ -4797,6 +4802,7 @@ impl WireGuardTransport {
                 match self
                     .encrypt_and_emit_outbound_with_lock_timeout(
                         OutboundPacket {
+                            room_authorization: None,
                             peer_id: peer_id_owned.clone(),
                             dst_ip: ip.src_addr().to_string(),
                             packet: ack_packet,
@@ -5543,6 +5549,7 @@ impl WireGuardTransport {
                 match self
                     .encrypt_and_emit_outbound(
                         OutboundPacket {
+                            room_authorization: None,
                             peer_id: peer_id.to_string(),
                             dst_ip: ip.src_addr().to_string(),
                             packet: ack_packet,
@@ -5709,6 +5716,7 @@ impl WireGuardTransport {
                 match self
                     .encrypt_and_emit_outbound(
                         OutboundPacket {
+                            room_authorization: None,
                             peer_id: peer_id.to_string(),
                             dst_ip: ip.src_addr().to_string(),
                             packet: ack_packet,

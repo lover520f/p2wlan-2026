@@ -429,8 +429,16 @@ impl RelaySupervisor {
         // until the renewal resolves so a successful handoff is never aborted
         // by its own predecessor's EOF.
         let mut pending_current_end: Option<Result<()>> = None;
+        let mut renewal_retry_at: Option<tokio::time::Instant> = None;
         loop {
             tokio::select! {
+                _ = tokio::time::sleep_until(renewal_retry_at.unwrap_or_else(tokio::time::Instant::now)), if renewal_retry_at.is_some() => {
+                    renewal_retry_at = None;
+                    renewal = spawn_renewal(
+                        connection_generation.load(std::sync::atomic::Ordering::SeqCst),
+                        current_transport.clone(),
+                    ).await;
+                }
                 hint = wait_for_android_network_change(self.android_network_change_rx.clone()), if self.android_network_change_rx.is_some() => {
                     let Some(hint) = hint else {
                         return Err(DaemonError::Relay(
@@ -556,6 +564,8 @@ impl RelaySupervisor {
                     let result = renewal_result;
                     match result {
                         Some(Ok(Some((new_transport, new_rx)))) => {
+                            let (new_transport, new_rx) = current_transport
+                                .handoff_rendezvous(new_transport, new_rx).await;
                             // The replacement is connected AND its ticket
                             // metadata (including the new expiry) is attached:
                             // swap it in, start its inbound drain, and only
@@ -665,11 +675,8 @@ impl RelaySupervisor {
                                 self.record_connection_close_diagnostics(&ended).await;
                                 return ended;
                             }
-                            renewal = spawn_renewal(
-                                connection_generation.load(std::sync::atomic::Ordering::SeqCst),
-                                current_transport.clone(),
-                            )
-                            .await;
+                            renewal = None;
+                            renewal_retry_at = Some(tokio::time::Instant::now() + RELAY_TICKET_RENEWAL_RETRY);
                         }
                         Some(Err(_)) | None => {
                             // The renewal task was dropped without a result;
@@ -687,11 +694,8 @@ impl RelaySupervisor {
                                 self.record_connection_close_diagnostics(&ended).await;
                                 return ended;
                             }
-                            renewal = spawn_renewal(
-                                connection_generation.load(std::sync::atomic::Ordering::SeqCst),
-                                current_transport.clone(),
-                            )
-                            .await;
+                            renewal = None;
+                            renewal_retry_at = Some(tokio::time::Instant::now() + RELAY_TICKET_RENEWAL_RETRY);
                         }
                     }
                 }
@@ -1294,6 +1298,7 @@ pub(super) async fn run_relay_peer_validation_loop(
                     RELAY_CONTROL_SEND_TIMEOUT,
                     send_transport.encrypt_and_emit_outbound(
                         OutboundPacket {
+                            room_authorization: None,
                             peer_id: send_peer_id.clone(),
                             dst_ip: send_peer_virtual_ip,
                             packet,
@@ -1607,6 +1612,7 @@ pub(super) async fn run_relay_peer_probe_loop(
                     RELAY_CONTROL_SEND_TIMEOUT,
                     send_transport.encrypt_and_emit_outbound(
                         OutboundPacket {
+                            room_authorization: None,
                             peer_id: send_peer_id.clone(),
                             dst_ip: send_peer_virtual_ip,
                             packet,
@@ -1858,6 +1864,7 @@ pub(super) async fn run_relay_peer_probe_loop(
                         RELAY_CONTROL_SEND_TIMEOUT,
                         send_transport.encrypt_and_emit_outbound(
                             OutboundPacket {
+                                room_authorization: None,
                                 peer_id: send_peer_id.clone(),
                                 dst_ip: send_peer_virtual_ip,
                                 packet,
@@ -1984,6 +1991,7 @@ pub(super) async fn send_relay_validation_packet(
     let sent = transport
         .encrypt_and_emit_outbound(
             OutboundPacket {
+                room_authorization: None,
                 peer_id: validation.peer_id.to_string(),
                 dst_ip: validation.peer_virtual_ip.to_string(),
                 packet,
@@ -2804,5 +2812,58 @@ mod tests {
             .expect("the supervisor must return after the current connection ends")
             .expect("the supervisor task must not panic");
         assert!(result.is_ok(), "clean end, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn audit_failed_renewal_must_back_off() {
+        let cache = Arc::new(RelayTicketCache::new(
+            crate::control::ControlClient::disabled_for_test(),
+        ));
+        let supervisor = test_supervisor(Some(cache.clone()));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let transport = RelayTransport::connect_for_test(
+            "default",
+            "tcp://relay.test:18081",
+            supervisor.peers.clone(),
+        )
+        .with_ticket_metadata("aud-1", "default", now + 50);
+        let (_tx, rx) = mpsc::channel(4);
+        let token = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts_task = attempts.clone();
+        let peers = supervisor.peers.clone();
+        let task = tokio::spawn(async move {
+            supervisor
+                .supervise_relay_connection(
+                    "tcp://relay.test:18081",
+                    transport,
+                    rx,
+                    token.clone(),
+                    move |expected, transport| {
+                        attempts_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Box::pin(spawn_relay_renewal_task_impl(
+                            Some(cache.clone()),
+                            "node-a".into(),
+                            peers.clone(),
+                            true,
+                            None,
+                            token.clone(),
+                            expected,
+                            transport,
+                        ))
+                    },
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        task.abort();
+        let count = attempts.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            count <= 1,
+            "renewal rearmed {count} times in 100ms; expected a 5-second retry delay"
+        );
     }
 }

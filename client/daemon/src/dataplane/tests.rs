@@ -497,3 +497,28 @@ use std::net::Ipv4Addr;
         assert!(timeout(Duration::from_millis(100), outbound_rx.recv()).await.is_err());
         task.abort();
     }
+
+    #[tokio::test]
+    async fn audit_room_outbound_must_recheck_after_acl_wait() {
+        let peers = Arc::new(PeerManager::new(Config::generate_default("http://ctrl.test", "room-test").unwrap()));
+        peers.add_peer(&peer("peer-b", "10.21.1.3")).await;
+        let auth = Arc::new(crate::rooms::RoomAuthorization::new("room-test"));
+        assert!(auth.replace("10.21.1.2", [("peer-b".into(), "10.21.1.3".into())], std::time::Instant::now(), 30));
+        let acl = Arc::new(RwLock::new(crate::acl::AclEngine::from_config(&AclConfig::default())));
+        let guard = acl.write().await;
+        let (tun, _ctrl) = MockTunDevice::new_pair("room0",1420,"10.21.1.2");
+        let (dp, mut rx) = DataPlane::new(tun, peers);
+        let mut dp = dp.with_room_authorization(auth.clone()).with_acl(acl.clone(), "local");
+        let packet = Ipv4Packet::build_icmp_echo_request(Ipv4Addr::new(10,21,1,2),Ipv4Addr::new(10,21,1,3),1,1,b"secret-after-revocation");
+        let now = std::time::Instant::now();
+        let mut routing = Box::pin(dp.route_outbound_packet(&packet,now,now));
+        // Poll through the first authorization check to the held ACL read lock.
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(routing.as_mut(),cx).is_pending());
+            std::task::Poll::Ready(())
+        }).await;
+        auth.invalidate();
+        drop(guard);
+        routing.await.unwrap();
+        assert!(rx.try_recv().is_err(), "packet was queued for transport after room authorization was revoked");
+    }
