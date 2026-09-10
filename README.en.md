@@ -15,6 +15,7 @@
   <p>
     <a href="https://github.com/yhan-sun/p2wlan/releases"><strong>Download</strong></a>
     · <a href="#quick-start">Quick Start</a>
+    · <a href="#screenshots">Screenshots</a>
     · <a href="#use-cases">Use Cases</a>
     · <a href="#how-it-works">How It Works</a>
     · <a href="#self-hosting">Self-hosting</a>
@@ -50,9 +51,28 @@ When establishing a connection, P2WLAN prefers **LAN Direct / public UDP P2P**. 
 
 ## Screenshots
 
-<p align="center">
-  <img src="assets/readme/screens.webp" width="100%" alt="P2WLAN network dashboard, device list, rooms, and a Minecraft room" />
-</p>
+<table align="center">
+    <tr>
+      <td align="center" width="50%">
+        <img src="assets/readme/screenshot-home.webp" width="100%" alt="P2WLAN home dashboard with network health and online devices" /><br />
+        <sub>Home · network health and online devices</sub>
+      </td>
+      <td align="center" width="50%">
+        <img src="assets/readme/screenshot-devices.webp" width="100%" alt="P2WLAN device list with nodes, connection rates, and availability" /><br />
+        <sub>Devices · nodes, rates, and availability</sub>
+      </td>
+    </tr>
+    <tr>
+      <td align="center" width="50%">
+        <img src="assets/readme/screenshot-rooms.webp" width="100%" alt="P2WLAN rooms page with room management and connection latency" /><br />
+        <sub>Rooms · room management and connection latency</sub>
+      </td>
+      <td align="center" width="50%">
+        <img src="assets/readme/screenshot-room.webp" width="100%" alt="P2WLAN Minecraft room with virtual IPs, paths, and latency" /><br />
+        <sub>Room details · virtual IPs, paths, and latency</sub>
+      </td>
+    </tr>
+</table>
 
 The client surfaces network health, peer availability, rooms, active paths, and end-to-end latency in one place. Device names and values shown in the screenshots are demo data.
 
@@ -188,6 +208,12 @@ go build -o p2wlan-control .
 go build -o p2wlan-relay ./relay
 ```
 
+Build the CLI and daemon from the repository root:
+
+```bash
+cargo build --release -p p2wlan-cli -p p2wlan-daemon
+```
+
 Production deployment also requires HTTPS/WSS, database, authentication secrets, and Relay addresses to be configured according to the current code. This README keeps only the high-level entry point; use the implementation under [`server/`](server/) as the source of truth for deployment details.
 
 ## Security Boundaries
@@ -198,6 +224,8 @@ Production deployment also requires HTTPS/WSS, database, authentication secrets,
 - The project is in **Preview** and has **not completed an independent security audit**.
 - P2P connectivity is not guaranteed across arbitrary NAT environments; Relay availability also depends on the Control Plane and Relay being reachable.
 - Perform your own security assessment before sensitive production deployment.
+
+Dependency scanning, workflow permissions, and published-asset checks are documented in [`docs/security-audit.md`](docs/security-audit.md).
 
 ## Developers
 

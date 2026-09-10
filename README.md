@@ -15,6 +15,7 @@
   <p>
     <a href="https://github.com/yhan-sun/p2wlan/releases"><strong>下载</strong></a>
     · <a href="#快速开始">快速开始</a>
+    · <a href="#界面预览">界面预览</a>
     · <a href="#适用场景">适用场景</a>
     · <a href="#工作方式">工作方式</a>
     · <a href="#自托管">自托管</a>
@@ -50,9 +51,28 @@ P2WLAN 是一个开源、P2P 优先、可自托管的虚拟局域网工具。它
 
 ## 界面预览
 
-<p align="center">
-  <img src="assets/readme/screens.webp" width="100%" alt="P2WLAN 网络状态、设备列表、房间与 Minecraft 联机房间界面" />
-</p>
+<table align="center">
+    <tr>
+      <td align="center" width="50%">
+        <img src="assets/readme/screenshot-home.webp" width="100%" alt="P2WLAN 首页：网络状态和在线设备" /><br />
+        <sub>首页 · 网络状态与在线设备</sub>
+      </td>
+      <td align="center" width="50%">
+        <img src="assets/readme/screenshot-devices.webp" width="100%" alt="P2WLAN 设备列表：节点、连接速率和在线状态" /><br />
+        <sub>设备 · 节点、速率与在线状态</sub>
+      </td>
+    </tr>
+    <tr>
+      <td align="center" width="50%">
+        <img src="assets/readme/screenshot-rooms.webp" width="100%" alt="P2WLAN 互联页面：多房间管理和连接延迟" /><br />
+        <sub>互联 · 房间管理与连接延迟</sub>
+      </td>
+      <td align="center" width="50%">
+        <img src="assets/readme/screenshot-room.webp" width="100%" alt="P2WLAN Minecraft 房间详情：虚拟 IP、连接路径和延迟" /><br />
+        <sub>房间详情 · 虚拟 IP、连接路径与延迟</sub>
+      </td>
+    </tr>
+</table>
 
 从全局网络状态、设备在线情况，到多房间管理、连接方式和端到端延迟，常用信息可以直接在客户端里看到。设备名称和截图数据均为演示数据。
 
@@ -188,6 +208,12 @@ go build -o p2wlan-control .
 go build -o p2wlan-relay ./relay
 ```
 
+CLI 和 daemon 可在仓库根目录构建：
+
+```bash
+cargo build --release -p p2wlan-cli -p p2wlan-daemon
+```
+
 生产部署还需要根据当前代码配置 HTTPS/WSS、数据库、认证密钥和 Relay 地址。README 首页只保留入口信息，具体配置请以 [`server/`](server/) 中的实现为准。
 
 ## 安全边界
@@ -198,6 +224,8 @@ go build -o p2wlan-relay ./relay
 - 项目处于 **Preview**，尚未完成独立安全审计。
 - 不保证任意 NAT 环境都能建立 P2P 直连；Relay 可用性同样依赖 Control Plane 和 Relay 可达。
 - 高敏感生产环境请在部署前自行完成安全评估。
+
+依赖扫描、工作流权限和发布资产校验等安全门禁见 [`docs/security-audit.md`](docs/security-audit.md)。
 
 ## 开发者
 
