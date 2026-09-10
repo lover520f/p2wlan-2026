@@ -1605,3 +1605,28 @@ async fn failed_critical_endpoint_publish_invalidates_only_device_lease() {
     drop(client);
     server.task.abort();
 }
+
+#[tokio::test]
+async fn explicit_room_device_access_preserves_denials_and_legacy_compatibility() {
+    for (status, code) in [(200, ""), (404, ""), (403, "room_device_pending"),
+        (403, "room_device_blocked"), (403, "room_device_paused")] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = test_config();
+        config.control.server_url = format!("http://{}", listener.local_addr().unwrap());
+        config.control.auth_token = "account-token".into();
+        config.network.network_id = "room-device-policy".into();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await.unwrap();
+            assert!(request.line.starts_with("POST /api/v1/rooms/room-device-policy/device-access "));
+            let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+            assert_eq!(body["resume"], true);
+            mock_respond(stream, status, &serde_json::json!({"error_code":code}).to_string()).await;
+        });
+        let result = timeout(Duration::from_secs(3), ControlClient::request_room_device_access(
+            &test_no_proxy_client(), &config)).await.unwrap();
+        if code.is_empty() { assert!(result.is_ok()); }
+        else { assert!(result.unwrap_err().to_string().contains(code)); }
+        timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+    }
+}

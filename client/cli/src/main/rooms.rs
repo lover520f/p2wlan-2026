@@ -110,6 +110,20 @@ enum RoomCommand {
         #[arg(long)]
         user: String,
     },
+    /// Disconnect, block, unblock, or approve one room device (access ID from room show)
+    DeviceAccess {
+        room: String,
+        #[arg(long)]
+        access: String,
+        #[arg(long, value_parser = ["disconnect", "block", "unblock", "approve"])]
+        action: String,
+    },
+    /// Require owner approval for new devices; existing decisions are preserved
+    DeviceApproval {
+        room: String,
+        #[arg(long, action = clap::ArgAction::Set)]
+        required: bool,
+    },
     /// Assign a fixed virtual IPv4 address to a room device
     DeviceIp {
         #[arg(name = "room")]
@@ -144,6 +158,35 @@ async fn room_command(config_path: &Path, command: RoomCommand) -> Result<(), St
     require_control_auth(&config)?;
 
     match command {
+        RoomCommand::DeviceAccess {
+            room,
+            access,
+            action,
+        } => {
+            let info = resolve_room(&config, &room).await?;
+            validate_path_segment("access", &access)?;
+            room_control_request(
+                &config,
+                reqwest::Method::POST,
+                &format!("/{}/device-access/{}/{}", info.id, access, action),
+                None,
+            )
+            .await?;
+            println!("设备操作完成；账号成员资格和其他设备不受影响。");
+            Ok(())
+        }
+        RoomCommand::DeviceApproval { room, required } => {
+            let info = resolve_room(&config, &room).await?;
+            room_control_request(
+                &config,
+                reqwest::Method::PUT,
+                &format!("/{}/device-policy", info.id),
+                Some(serde_json::json!({"require_approval": required})),
+            )
+            .await?;
+            println!("新设备审批设置已更新。");
+            Ok(())
+        }
         RoomCommand::List { json } => {
             let response = room_control_request(&config, reqwest::Method::GET, "", None).await?;
             if json {
@@ -214,7 +257,10 @@ async fn room_command(config_path: &Path, command: RoomCommand) -> Result<(), St
                     .get("room")
                     .ok_or_else(|| "创建房间响应缺少 room".to_string())?,
             )?;
-            println!("房间已创建：{}（房间号 {}，网段 {}）", room.name, room.code, room.cidr);
+            println!(
+                "房间已创建：{}（房间号 {}，网段 {}）",
+                room.name, room.code, room.cidr
+            );
             Ok(())
         }
         RoomCommand::Join {
@@ -315,7 +361,10 @@ async fn room_command(config_path: &Path, command: RoomCommand) -> Result<(), St
                 .and_then(Value::as_str)
                 .ok_or_else(|| "创建邀请响应缺少 invite_token".to_string())?;
             println!("邀请 token：{token}");
-            println!("邀请链接：{}", room_invitation_uri(&config.control.server_url, &info.code, token)?);
+            println!(
+                "邀请链接：{}",
+                room_invitation_uri(&config.control.server_url, &info.code, token)?
+            );
             Ok(())
         }
         RoomCommand::Invites { room, json } => {
@@ -338,7 +387,10 @@ async fn room_command(config_path: &Path, command: RoomCommand) -> Result<(), St
                 println!(
                     "{}  expires={}  uses={}/{}  {}",
                     invite.get("id").and_then(Value::as_str).unwrap_or("?"),
-                    invite.get("expires_at").and_then(Value::as_i64).unwrap_or(0),
+                    invite
+                        .get("expires_at")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0),
                     invite.get("uses").and_then(Value::as_i64).unwrap_or(0),
                     invite.get("max_uses").and_then(Value::as_i64).unwrap_or(0),
                     if invite.get("revoked").and_then(Value::as_bool) == Some(true) {
@@ -445,9 +497,9 @@ async fn room_control_request(
         .text()
         .await
         .map_err(|error| format!("读取房间服务响应失败：{error}"))?;
-    let value = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| {
-        serde_json::json!({"error": text.trim().chars().take(240).collect::<String>()})
-    });
+    let value = serde_json::from_str::<Value>(&text).unwrap_or_else(
+        |_| serde_json::json!({"error": text.trim().chars().take(240).collect::<String>()}),
+    );
     if !status.is_success() {
         return Err(room_api_error(status, &value));
     }
@@ -496,7 +548,9 @@ fn room_api_error(status: reqwest::StatusCode, value: &Value) -> String {
         _ if status == reqwest::StatusCode::UNAUTHORIZED => "登录状态已失效，请重新登录",
         _ if status == reqwest::StatusCode::NOT_FOUND
             || status == reqwest::StatusCode::UPGRADE_REQUIRED =>
-            "当前服务器不支持好友房间，请升级服务器",
+        {
+            "当前服务器不支持好友房间，请升级服务器"
+        }
         _ => fallback,
     };
     format!("{message}（HTTP {status}）")
@@ -578,8 +632,33 @@ fn print_room_details(value: &Value) -> Result<(), String> {
             println!(
                 "  {}  {}  {}",
                 member.get("user_id").and_then(Value::as_str).unwrap_or("?"),
-                member.get("username").and_then(Value::as_str).unwrap_or("?"),
-                member.get("role").and_then(Value::as_str).unwrap_or("member")
+                member
+                    .get("username")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+                member
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("member")
+            );
+        }
+    }
+    if let Some(access) = value.get("device_access").and_then(Value::as_array) {
+        println!(
+            "设备权限（新设备审批：{}）：",
+            value
+                .get("device_approval_required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        );
+        for item in access {
+            println!(
+                "  {}  {}  {}",
+                item.get("id").and_then(Value::as_str).unwrap_or("?"),
+                item.get("device_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+                item.get("state").and_then(Value::as_str).unwrap_or("?")
             );
         }
     }
@@ -594,13 +673,23 @@ fn print_room_details(value: &Value) -> Result<(), String> {
                     .get("virtual_ip")
                     .and_then(Value::as_str)
                     .unwrap_or("(auto)"),
-                device.get("online").and_then(Value::as_bool).unwrap_or(false)
+                device
+                    .get("online")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
             );
         }
     }
     if let Some(banned) = value.get("banned_user_ids").and_then(Value::as_array) {
         if !banned.is_empty() {
-            println!("封禁账号：{}", banned.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
+            println!(
+                "封禁账号：{}",
+                banned
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
     }
     Ok(())
@@ -626,11 +715,7 @@ async fn room_member_action(
     Ok(())
 }
 
-async fn connect_room(
-    config_path: &Path,
-    config: &Config,
-    selector: &str,
-) -> Result<(), String> {
+async fn connect_room(config_path: &Path, config: &Config, selector: &str) -> Result<(), String> {
     let response = room_control_request(config, reqwest::Method::GET, "", None).await?;
     let user_id = response
         .get("user_id")
@@ -656,8 +741,26 @@ async fn connect_room(
     let config_file = room_config_path_for(config_path, &profile);
     let room_config = prepare_room_config(config, &room, &profile, &config_file)?;
     save_config(&room_config, &config_file)?;
+    if rooms.iter().any(|value| {
+        value.get("id").and_then(Value::as_str) == Some(&room.id)
+            && value.get("device_controls_version").and_then(Value::as_u64) == Some(1)
+    }) {
+        room_control_request(
+            config,
+            reqwest::Method::POST,
+            &format!("/{}/device-access", room.id),
+            Some(serde_json::json!({
+                "public_key": room_config.node.public_key,
+                "device_name": room_config.node.device_name,
+                "platform": room_config.node.platform,
+                "resume": true,
+            })),
+        )
+        .await?;
+    }
     let runtime = room_state_dir(&profile);
     start_with_state_dir(&config_file, &runtime).await?;
+    set_room_connection_intent(&runtime, true)?;
     println!("房间已连接：{}（profile {profile}）", room.name);
     Ok(())
 }
@@ -676,10 +779,34 @@ async fn disconnect_room(
     let profile = room_profile_id(&config.control.server_url, user_id, &room.id);
     let config_file = room_config_path_for(config_path, &profile);
     if !config_file.exists() {
+        set_room_connection_intent(&room_state_dir(&profile), false)?;
         println!("房间没有本地 profile，未运行。");
         return Ok(());
     }
-    stop_with_state_dir(&config_file, &room_state_dir(&profile)).await
+    let runtime = room_state_dir(&profile);
+    let stopped = stop_with_state_dir(&config_file, &runtime).await;
+    set_room_connection_intent(&runtime, false)?;
+    stopped
+}
+
+fn set_room_connection_intent(runtime: &Path, wanted: bool) -> Result<(), String> {
+    let path = runtime.join("connection.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let mut value: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "invalid local room preferences".to_string())?;
+    object.insert("wanted".into(), Value::Bool(wanted));
+    let temp = runtime.join("connection.cli.tmp");
+    std::fs::write(
+        &temp,
+        serde_json::to_vec(&value).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::rename(temp, path).map_err(|e| e.to_string())
 }
 
 async fn leave_room(config_path: &Path, config: &Config, selector: &str) -> Result<(), String> {
@@ -693,6 +820,7 @@ async fn leave_room(config_path: &Path, config: &Config, selector: &str) -> Resu
     let config_file = room_config_path_for(config_path, &profile);
     if config_file.exists() {
         stop_with_state_dir(&config_file, &room_state_dir(&profile)).await?;
+        set_room_connection_intent(&room_state_dir(&profile), false)?;
     }
     let suffix = if room.role == "owner" {
         format!("/{}", room.id)
@@ -777,7 +905,8 @@ fn prepare_room_config(
 }
 
 fn room_profile_id(server: &str, user_id: &str, network_id: &str) -> String {
-    let server = normalize_control_server(server).unwrap_or_else(|_| server.trim_end_matches('/').to_string());
+    let server = normalize_control_server(server)
+        .unwrap_or_else(|_| server.trim_end_matches('/').to_string());
     let encoded = serde_json::to_vec(&[server, user_id.to_string(), network_id.to_string()])
         .expect("room profile tuple is serializable");
     hex::encode(sha2::Sha256::digest(encoded))
@@ -813,7 +942,9 @@ fn room_invitation_uri(server: &str, code: &str, token: &str) -> Result<String, 
 fn required_password(password: Option<String>, prompt: &str) -> Result<String, String> {
     let value = match password {
         Some(value) => value,
-        None => rpassword::prompt_password(prompt).map_err(|error| format!("读取密码失败：{error}"))?,
+        None => {
+            rpassword::prompt_password(prompt).map_err(|error| format!("读取密码失败：{error}"))?
+        }
     };
     if value.trim().is_empty() {
         return Err("密码不能为空".to_string());
@@ -854,7 +985,9 @@ fn validate_room_code(value: &str) -> Result<(), String> {
 fn is_valid_room_id(value: &str) -> bool {
     value.len() == 37
         && value.starts_with("room-")
-        && value[5..].chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+        && value[5..]
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
 }
 
 fn is_valid_room_code(value: &str) -> bool {
@@ -922,8 +1055,12 @@ mod room_tests {
     fn selectors_and_room_ips_are_strict() {
         assert!(super::is_valid_room_code("12345678"));
         assert!(!super::is_valid_room_code("1234"));
-        assert!(super::is_valid_room_id("room-0123456789abcdef0123456789abcdef"));
-        assert!(!super::is_valid_room_id("room-0123456789ABCDEF0123456789abcdef"));
+        assert!(super::is_valid_room_id(
+            "room-0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!super::is_valid_room_id(
+            "room-0123456789ABCDEF0123456789abcdef"
+        ));
         assert!(super::validate_room_ip("10.21.7.42", "10.21.7.0/24").is_ok());
         assert!(super::validate_room_ip("10.20.7.42", "10.21.7.0/24").is_err());
         assert!(super::required_password(Some("short".to_string()), "").is_err());

@@ -7,6 +7,9 @@ impl ControlClient {
             return Err(DaemonError::Config("room registration requires an authenticated managed profile".into()));
         }
         let http = control_http_client(config.control.proxy_mode)?;
+        // Only Android's explicit room preparation calls this method. The
+        // background registration loop must never resume a remotely paused device.
+        Self::request_room_device_access(&http, config).await?;
         let (node_id, virtual_ip, cidr, relays, _, _) = register_device(
             &http,
             &normalize_http_base_url(&config.control.server_url),
@@ -29,6 +32,28 @@ impl ControlClient {
             config.relay.servers = relays;
         }
         Ok(())
+    }
+
+    async fn request_room_device_access(http: &reqwest::Client, config: &Config) -> Result<()> {
+        let response = http.post(format!("{}/api/v1/rooms/{}/device-access",
+            normalize_http_base_url(&config.control.server_url), config.network.network_id))
+            .timeout(Duration::from_secs(8)).bearer_auth(&config.control.auth_token)
+            .json(&serde_json::json!({"public_key":config.node.public_key,
+                "device_name":config.node.device_name,"platform":config.node.platform,"resume":true}))
+            .send().await.map_err(|_| DaemonError::ControlPlane("room device access request failed".into()))?;
+        if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+            // Old servers do not expose device controls. Registration still
+            // validates membership and protocol on those servers.
+            return Ok(());
+        }
+        let body: serde_json::Value = response.json().await.unwrap_or_default();
+        let code = match body.get("error_code").and_then(serde_json::Value::as_str) {
+            Some("room_device_pending") => "room_device_pending",
+            Some("room_device_blocked") => "room_device_blocked",
+            Some("room_device_paused") => "room_device_paused",
+            _ => "room_device_access_denied",
+        };
+        Err(DaemonError::ControlPlane(code.into()))
     }
 
     /// Create a new control client.

@@ -423,6 +423,13 @@ mod android_bridge {
         if !request.device_name.trim().is_empty() {
             config.node.device_name = request.device_name.trim().to_owned();
         }
+        // Persist the installation identity before requesting approval. Without
+        // this, a denied first registration generates a different key on retry.
+        let mut identity = config.clone();
+        identity.control.auth_token.clear();
+        identity.diagnostics.auth_token = None;
+        identity.diagnostics.auth_token_path = None;
+        identity.save_to_file(&path).map_err(|_| "room identity could not be persisted")?;
         // Room preparation performs a control-plane registration before the
         // daemon is constructed. Reserve one durable boot incarnation now so
         // the registration's `registration_incarnation` and the daemon's
@@ -437,15 +444,15 @@ mod android_bridge {
                 return Err("room registration runtime unavailable".into());
             }
         };
-        if runtime
+        if let Err(error) = runtime
             .block_on(p2pnet_daemon::control::ControlClient::register_room_profile(&mut config))
-            .is_err()
         {
             p2pnet_daemon::incarnation::discard_prepared_boot_incarnation(&config);
-            return Err(
-                "room registration failed; check membership, server version and connectivity"
-                    .into(),
-            );
+            let detail = error.to_string();
+            for code in ["room_device_pending", "room_device_blocked", "room_device_paused"] {
+                if detail.contains(code) { return Err(code.into()); }
+            }
+            return Err("room registration failed; check membership, server version and connectivity".into());
         }
         let reply = serde_json::json!({"virtual_ip": config.network.virtual_ip, "cidr": config.network.cidr}).to_string();
         config.control.auth_token.clear();
@@ -832,6 +839,7 @@ mod android_bridge {
         }));
         let reply = match outcome {
             Ok(Ok(reply)) => reply,
+            Ok(Err(error)) if matches!(error.as_str(), "room_device_pending" | "room_device_blocked" | "room_device_paused") => serde_json::json!({"error":error}).to_string(),
             _ => serde_json::json!({"error": "room registration failed"}).to_string(),
         };
         new_string_or_null(&mut env, Some(reply))

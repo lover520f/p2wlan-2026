@@ -200,6 +200,9 @@ func (db *DB) ValidateDeviceCredential(token string) (*DeviceCredential, *Device
 			return nil, nil, ErrRoomAccess
 		}
 	}
+	if allowed, err := db.RoomDeviceAllowed(device); err != nil || !allowed {
+		return nil, nil, ErrRoomAccess
+	}
 	return &cred, device, nil
 }
 

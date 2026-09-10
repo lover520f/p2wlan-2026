@@ -12,21 +12,24 @@ import (
 
 func (s *Server) RegisterRoomRoutes(mux *http.ServeMux) {
 	for pattern, handler := range map[string]http.HandlerFunc{
-		"GET /api/v1/rooms":                            s.ListRooms,
-		"POST /api/v1/rooms":                           s.CreateRoom,
-		"POST /api/v1/rooms/join":                      s.JoinRoom,
-		"GET /api/v1/rooms/{room}":                     s.GetRoom,
-		"PATCH /api/v1/rooms/{room}":                   s.UpdateRoom,
-		"DELETE /api/v1/rooms/{room}":                  s.DeleteRoom,
-		"POST /api/v1/rooms/{room}/leave":              s.LeaveRoom,
-		"DELETE /api/v1/rooms/{room}/members/{user}":   s.RemoveRoomMember,
-		"PUT /api/v1/rooms/{room}/bans/{user}":         s.BanRoomMember,
-		"DELETE /api/v1/rooms/{room}/bans/{user}":      s.UnbanRoomMember,
-		"PATCH /api/v1/rooms/{room}/devices/{device}":  s.AssignRoomDeviceIP,
-		"DELETE /api/v1/rooms/{room}/devices/{device}": s.DeleteRoomDevice,
-		"GET /api/v1/rooms/{room}/invites":             s.ListRoomInvites,
-		"POST /api/v1/rooms/{room}/invites":            s.CreateRoomInvite,
-		"DELETE /api/v1/rooms/{room}/invites/{invite}": s.RevokeRoomInvite,
+		"POST /api/v1/rooms/{room}/device-access":                   s.RequestRoomDevice,
+		"POST /api/v1/rooms/{room}/device-access/{access}/{action}": s.ChangeRoomDeviceAccess,
+		"PUT /api/v1/rooms/{room}/device-policy":                    s.SetRoomDeviceApproval,
+		"GET /api/v1/rooms":                                         s.ListRooms,
+		"POST /api/v1/rooms":                                        s.CreateRoom,
+		"POST /api/v1/rooms/join":                                   s.JoinRoom,
+		"GET /api/v1/rooms/{room}":                                  s.GetRoom,
+		"PATCH /api/v1/rooms/{room}":                                s.UpdateRoom,
+		"DELETE /api/v1/rooms/{room}":                               s.DeleteRoom,
+		"POST /api/v1/rooms/{room}/leave":                           s.LeaveRoom,
+		"DELETE /api/v1/rooms/{room}/members/{user}":                s.RemoveRoomMember,
+		"PUT /api/v1/rooms/{room}/bans/{user}":                      s.BanRoomMember,
+		"DELETE /api/v1/rooms/{room}/bans/{user}":                   s.UnbanRoomMember,
+		"PATCH /api/v1/rooms/{room}/devices/{device}":               s.AssignRoomDeviceIP,
+		"DELETE /api/v1/rooms/{room}/devices/{device}":              s.DeleteRoomDevice,
+		"GET /api/v1/rooms/{room}/invites":                          s.ListRoomInvites,
+		"POST /api/v1/rooms/{room}/invites":                         s.CreateRoomInvite,
+		"DELETE /api/v1/rooms/{room}/invites/{invite}":              s.RevokeRoomInvite,
 	} {
 		mux.HandleFunc(pattern, s.auth.RequireAuth(handler))
 	}
@@ -60,6 +63,12 @@ func roomBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 func roomError(w http.ResponseWriter, err error) {
 	status, code, message := http.StatusInternalServerError, "room_internal", "room operation failed"
 	switch {
+	case errors.Is(err, database.ErrRoomDeviceBlocked):
+		status, code, message = http.StatusForbidden, "room_device_blocked", err.Error()
+	case errors.Is(err, database.ErrRoomDevicePending):
+		status, code, message = http.StatusForbidden, "room_device_pending", err.Error()
+	case errors.Is(err, database.ErrRoomDevicePaused):
+		status, code, message = http.StatusForbidden, "room_device_paused", err.Error()
 	case errors.Is(err, database.ErrRoomAccess):
 		status, code, message = http.StatusForbidden, "room_access", database.ErrRoomAccess.Error()
 	case errors.Is(err, database.ErrRoomExists):
@@ -328,6 +337,63 @@ func (s *Server) RevokeRoomInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.db.RevokeRoomInvite(actor, r.PathValue("room"), r.PathValue("invite")); err != nil {
+		roomError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// Device controls require account authentication, never a daemon credential.
+func (s *Server) RequestRoomDevice(w http.ResponseWriter, r *http.Request) {
+	actor, ok := roomActor(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		PublicKey  string `json:"public_key"`
+		DeviceName string `json:"device_name"`
+		Platform   string `json:"platform"`
+		Resume     bool   `json:"resume"`
+	}
+	if !roomBody(w, r, &req) {
+		return
+	}
+	access, err := s.db.RequestRoomDevice(actor, r.PathValue("room"), req.PublicKey, req.DeviceName, req.Platform, req.Resume)
+	if err != nil {
+		roomError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"access": access})
+}
+func (s *Server) ChangeRoomDeviceAccess(w http.ResponseWriter, r *http.Request) {
+	actor, ok := roomActor(w, r)
+	if !ok {
+		return
+	}
+	ids, err := s.db.ChangeRoomDeviceAccess(actor, r.PathValue("room"), r.PathValue("access"), r.PathValue("action"))
+	if err != nil {
+		roomError(w, err)
+		return
+	}
+	s.roomChanged(r.PathValue("room"), ids)
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+func (s *Server) SetRoomDeviceApproval(w http.ResponseWriter, r *http.Request) {
+	actor, ok := roomActor(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Required *bool `json:"require_approval"`
+	}
+	if !roomBody(w, r, &req) {
+		return
+	}
+	if req.Required == nil {
+		roomError(w, database.ErrRoomInvalid)
+		return
+	}
+	if err := s.db.SetRoomDeviceApproval(actor, r.PathValue("room"), *req.Required); err != nil {
 		roomError(w, err)
 		return
 	}

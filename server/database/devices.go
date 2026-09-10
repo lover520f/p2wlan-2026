@@ -306,6 +306,19 @@ func (db *DB) registerDeviceWithOptions(userID, networkID, publicKey, deviceName
 		return nil, ErrRoomInvalid
 	}
 
+	if room {
+		access, err := ensureRoomDeviceAccess(tx, userID, networkID, publicKey, deviceName, platform)
+		if err != nil {
+			return nil, err
+		}
+		if denied := roomDeviceStateError(access.State); denied != nil {
+			if err = tx.Commit(); err != nil {
+				return nil, err
+			}
+			return nil, denied
+		}
+	}
+
 	var existing Device
 	var online int
 	var existingRelayRTTMS sql.NullInt64

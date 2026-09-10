@@ -3,10 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 
 class RoomException implements Exception {
-  const RoomException(this.message);
+  const RoomException(this.message, {this.code});
+  final String? code;
   final String message;
   @override
   String toString() => message;
+}
+
+class RoomConnectionStopped extends RoomException {
+  const RoomConnectionStopped(super.message);
 }
 
 String roomControlServer(String value) {
@@ -32,6 +37,7 @@ class FriendRoom {
     required this.role,
     required this.locked,
     this.ownerUsername = '',
+    this.deviceControls = false,
     this.memberCount,
     this.onlineMemberCount,
     this.ownerDeviceIps = const [],
@@ -54,6 +60,7 @@ class FriendRoom {
       role: json['role'] as String? ?? 'member',
       locked: json['join_locked'] == true,
       ownerUsername: json['owner_username'] as String? ?? '',
+      deviceControls: json['device_controls_version'] == 1,
       memberCount: (json['member_count'] as num?)?.toInt(),
       onlineMemberCount: (json['online_member_count'] as num?)?.toInt(),
       ownerDeviceIps: (json['owner_device_ips'] as List? ?? [])
@@ -69,6 +76,7 @@ class FriendRoom {
   final String role;
   final bool locked;
   final String ownerUsername;
+  final bool deviceControls;
   final int? memberCount;
   final int? onlineMemberCount;
   final List<String> ownerDeviceIps;
@@ -158,6 +166,8 @@ class RoomRoster {
     : room = FriendRoom.fromJson(_object(json['room'])),
       members = _objects(json['members']),
       devices = _objects(json['devices']),
+      deviceApprovalRequired = json['device_approval_required'] == true,
+      deviceAccess = _objects(json['device_access']),
       bannedUserIds = (json['banned_user_ids'] as List? ?? const [])
           .whereType<String>()
           .toList(growable: false);
@@ -165,6 +175,8 @@ class RoomRoster {
   final List<Map<String, dynamic>> members;
   final List<Map<String, dynamic>> devices;
   final List<String> bannedUserIds;
+  final bool deviceApprovalRequired;
+  final List<Map<String, dynamic>> deviceAccess;
 }
 
 Map<String, dynamic> _object(Object? value) {
@@ -255,6 +267,9 @@ class RoomApi {
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw RoomException(switch (json['error_code']) {
+        'room_device_blocked' => '此设备已被禁止连接该房间，请解除限制后重试',
+        'room_device_pending' => '此设备正在等待房主审批，请批准后在本机重新连接',
+        'room_device_paused' => '此设备已被远程断开，请在本机手动连接',
         'room_exists' => '每个账号最多创建一个房间',
         'room_join' => '无法加入：房间号、密码或邀请无效，房间已锁定，或账号已被封禁',
         'room_access' => '无权操作该房间，或你已不再是成员',
@@ -266,7 +281,7 @@ class RoomApi {
         _ when response.statusCode == 404 || response.statusCode == 426 =>
           '当前服务器不支持好友房间，请升级服务器',
         _ => '房间操作失败，请刷新后确认状态',
-      });
+      }, code: json['error_code'] as String?);
     }
     return json;
   }

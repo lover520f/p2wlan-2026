@@ -33,10 +33,11 @@ const roomColumns = `r.network_id, r.room_code, n.name, n.cidr, r.owner_id, r.jo
 var roomDummyHash, _ = bcrypt.GenerateFromPassword([]byte("p2wlan-room-dummy-credential"), bcrypt.DefaultCost)
 
 type Room struct {
-	OwnerUsername     string   `json:"owner_username"`
-	MemberCount       int      `json:"member_count"`
-	OnlineMemberCount int      `json:"online_member_count"`
-	OwnerDeviceIPs    []string `json:"owner_device_ips"`
+	DeviceControlsVersion int      `json:"device_controls_version"`
+	OwnerUsername         string   `json:"owner_username"`
+	MemberCount           int      `json:"member_count"`
+	OnlineMemberCount     int      `json:"online_member_count"`
+	OwnerDeviceIPs        []string `json:"owner_device_ips"`
 
 	ID         string `json:"id"`
 	Code       string `json:"room_code"`
@@ -57,10 +58,12 @@ type RoomMember struct {
 }
 
 type RoomDetails struct {
-	Room          *Room        `json:"room"`
-	Members       []RoomMember `json:"members"`
-	Devices       []Device     `json:"devices"`
-	BannedUserIDs []string     `json:"banned_user_ids"`
+	Room                   *Room              `json:"room"`
+	Members                []RoomMember       `json:"members"`
+	Devices                []Device           `json:"devices"`
+	BannedUserIDs          []string           `json:"banned_user_ids"`
+	DeviceAccess           []RoomDeviceAccess `json:"device_access"`
+	DeviceApprovalRequired bool               `json:"device_approval_required"`
 }
 
 type RoomInvite struct {
@@ -121,7 +124,10 @@ func migrateRooms(db *sql.DB) error {
 	AND NOT EXISTS (SELECT 1 FROM network_memberships WHERE network_id = NEW.network_id AND user_id = NEW.user_id)
 	BEGIN SELECT RAISE(ABORT, 'room membership required'); END;
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	return migrateRoomDevices(db)
 }
 
 func (db *DB) beginRoomWrite() (*sql.Tx, error) {
@@ -156,7 +162,7 @@ func roomPasswordHash(password string) ([]byte, error) {
 }
 
 func scanRoom(row interface{ Scan(...any) error }) (*Room, error) {
-	r := &Room{}
+	r := &Room{DeviceControlsVersion: 1}
 	err := row.Scan(&r.ID, &r.Code, &r.Name, &r.CIDR, &r.OwnerID, &r.JoinLocked, &r.Revision, &r.CreatedAt)
 	return r, err
 }
@@ -241,7 +247,7 @@ func (db *DB) CreateRoom(ownerID, name, password string) (*Room, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &Room{ID: id, Code: code, Name: name, CIDR: cidr, OwnerID: ownerID, CreatedAt: now, Revision: 1, Role: "owner"}, nil
+	return &Room{ID: id, Code: code, Name: name, CIDR: cidr, OwnerID: ownerID, CreatedAt: now, Revision: 1, Role: "owner", DeviceControlsVersion: 1}, nil
 }
 
 func allocateRoomSubnet(tx *sql.Tx, now int64) (string, error) {
@@ -298,6 +304,7 @@ func (db *DB) ListRooms(userID string) ([]Room, error) {
 	result := []Room{}
 	for rows.Next() {
 		var r Room
+		r.DeviceControlsVersion = 1
 		var ownerIPs string
 		if err := rows.Scan(&r.ID, &r.Code, &r.Name, &r.CIDR, &r.OwnerID, &r.JoinLocked, &r.Revision, &r.CreatedAt, &r.Role, &r.OwnerUsername, &r.MemberCount, &r.OnlineMemberCount, &ownerIPs); err != nil {
 			return nil, err
@@ -383,6 +390,9 @@ func (db *DB) GetRoom(userID, roomID string) (*RoomDetails, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	if err := loadRoomDeviceAccess(tx, out); err != nil {
+		return nil, err
 	}
 	return out, tx.Commit()
 }
@@ -840,7 +850,7 @@ func (db *DB) DeleteRoomDevice(actorID, roomID, deviceID string) error {
 }
 
 func (db *DB) ListVisibleDevices(userID, networkID string) ([]Device, error) {
-	return db.listDevices(`FROM devices d WHERE d.network_id = ? AND ((d.user_id = ? AND NOT EXISTS(SELECT 1 FROM rooms WHERE network_id = d.network_id)) OR (EXISTS (SELECT 1 FROM network_memberships self WHERE self.network_id = d.network_id AND self.user_id = ?) AND EXISTS (SELECT 1 FROM rooms WHERE network_id = d.network_id) AND EXISTS (SELECT 1 FROM network_memberships peer WHERE peer.network_id = d.network_id AND peer.user_id = d.user_id)))`, networkID, userID, userID)
+	return db.listDevices(`FROM devices d WHERE d.network_id = ? AND NOT EXISTS(SELECT 1 FROM room_device_access a WHERE a.network_id=d.network_id AND a.public_key=d.public_key AND a.state!='allowed') AND ((d.user_id = ? AND NOT EXISTS(SELECT 1 FROM rooms WHERE network_id = d.network_id)) OR (EXISTS (SELECT 1 FROM network_memberships self WHERE self.network_id = d.network_id AND self.user_id = ?) AND EXISTS (SELECT 1 FROM rooms WHERE network_id = d.network_id) AND EXISTS (SELECT 1 FROM network_memberships peer WHERE peer.network_id = d.network_id AND peer.user_id = d.user_id)))`, networkID, userID, userID)
 }
 
 func (db *DB) DevicesMayCommunicate(fromID, toID string) (bool, error) {
@@ -849,7 +859,7 @@ func (db *DB) DevicesMayCommunicate(fromID, toID string) (bool, error) {
 	return allowed, err
 }
 
-const devicesMayCommunicateSQL = `SELECT EXISTS(SELECT 1 FROM devices a JOIN devices b ON b.network_id = a.network_id WHERE a.id = ? AND b.id = ? AND (
+const devicesMayCommunicateSQL = `SELECT EXISTS(SELECT 1 FROM devices a JOIN devices b ON b.network_id = a.network_id WHERE a.id = ? AND b.id = ? AND NOT EXISTS(SELECT 1 FROM room_device_access access WHERE access.network_id=a.network_id AND access.public_key IN (a.public_key,b.public_key) AND access.state!='allowed') AND (
 		(a.user_id = b.user_id AND NOT EXISTS(SELECT 1 FROM rooms WHERE network_id = a.network_id)) OR
 		(EXISTS(SELECT 1 FROM rooms WHERE network_id = a.network_id) AND EXISTS(SELECT 1 FROM network_memberships WHERE network_id = a.network_id AND user_id = a.user_id) AND EXISTS(SELECT 1 FROM network_memberships WHERE network_id = b.network_id AND user_id = b.user_id))
 	))`

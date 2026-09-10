@@ -30,9 +30,12 @@ Map<String, dynamic> _room(String role) => {
 };
 
 class _FakeRoomApi extends RoomApi {
-  _FakeRoomApi({this.role = 'owner', this.empty = false})
+  _FakeRoomApi({this.role = 'owner', this.empty = false, this.controls = false})
     : super(server: 'https://control.example', token: _token);
   final String role;
+  final bool controls;
+  String accessState = 'allowed';
+  bool approvalRequired = false;
   bool empty;
   bool ownerOnline = false;
   bool deviceOnline = true;
@@ -41,12 +44,33 @@ class _FakeRoomApi extends RoomApi {
   @override
   Future<List<FriendRoom>> list() async {
     userId = role == 'owner' ? 'owner' : 'member';
-    return empty ? [] : [FriendRoom.fromJson(_room(role))];
+    return empty
+        ? []
+        : [
+            FriendRoom.fromJson({
+              ..._room(role),
+              if (controls) 'device_controls_version': 1,
+            }),
+          ];
   }
 
   @override
   Future<RoomRoster> roster(String room) async => RoomRoster.fromJson({
-    'room': _room(role),
+    'room': {..._room(role), if (controls) 'device_controls_version': 1},
+    'device_approval_required': approvalRequired,
+    'device_access': controls
+        ? [
+            {
+              'id': 'access-one',
+              'user_id': 'member',
+              'public_key': 'key-one',
+              'device_name': '好友电脑',
+              'device_id': 'device-1',
+              'state': accessState,
+              'blocked_by': 'owner',
+            },
+          ]
+        : [],
     'members': [
       {'user_id': 'owner', 'role': 'owner', 'username': '房主小林'},
       {'user_id': 'member', 'role': 'member', 'username': '阿明'},
@@ -69,6 +93,12 @@ class _FakeRoomApi extends RoomApi {
     Map<String, dynamic>? payload,
   ]) async {
     calls.add('$method ${segments.join('/')} ${jsonEncode(payload)}');
+    if (method == 'POST' && segments.contains('device-access')) {
+      accessState = segments.last == 'block' ? 'blocked' : 'paused';
+    }
+    if (method == 'PUT' && segments.last == 'device-policy') {
+      approvalRequired = payload?['require_approval'] == true;
+    }
     if (method == 'GET' && segments.last == 'invites') return {'invites': []};
     return {'success': true};
   }
@@ -154,6 +184,7 @@ void main() {
     bool shell = false,
     bool enterRoom = true,
     bool enableDaemonPolling = false,
+    bool controls = false,
   }) async {
     final dir = await tester.runAsync(
       () => Directory.systemTemp.createTemp('p2wlan-rooms-ui-'),
@@ -189,7 +220,7 @@ void main() {
       diagnosticsApi: DiagnosticsApi(),
       enableFreshnessTimer: false,
     );
-    final api = _FakeRoomApi(role: role, empty: empty);
+    final api = _FakeRoomApi(role: role, empty: empty, controls: controls);
     addTearDown(() {
       api.close();
       status.dispose();
@@ -221,6 +252,84 @@ void main() {
     }
     return api;
   }
+
+  testWidgets(
+    'member can remotely disconnect only their device with an explicit scope',
+    (tester) async {
+      final api = await pump(tester, role: 'member', controls: true);
+      final menu = find.byTooltip('管理设备');
+      await tester.ensureVisible(menu);
+      await tester.pumpAndSettle();
+      await tester.tap(menu);
+      await tester.pumpAndSettle();
+      expect(find.text('分配 IP'), findsNothing);
+      await tester.tap(find.text('断开此设备'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('其他设备保持连接'), findsOneWidget);
+      expect(api.calls.where((call) => call.contains('/disconnect')), isEmpty);
+      await tester.tap(find.text('确认'));
+      await tester.pumpAndSettle();
+      expect(
+        api.calls.where(
+          (call) => call.contains('device-access/access-one/disconnect'),
+        ),
+        hasLength(1),
+      );
+      expect(find.text('已断开'), findsOneWidget);
+    },
+  );
+
+  testWidgets('owner can enable approval and approve a pending device', (
+    tester,
+  ) async {
+    final api = await pump(tester, controls: true);
+    api.accessState = 'pending';
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pumpAndSettle();
+    final menu = find.byTooltip('管理设备');
+    await tester.ensureVisible(menu);
+    await tester.pumpAndSettle();
+    await tester.tap(menu);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('批准此设备'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('不会自动上线'), findsOneWidget);
+    await tester.tap(find.text('确认'));
+    await tester.pumpAndSettle();
+    expect(
+      api.calls.where(
+        (call) => call.contains('device-access/access-one/approve'),
+      ),
+      hasLength(1),
+    );
+    await tester.ensureVisible(find.text('房间设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('房间设置'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('新设备需要房主审批'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('新设备需要房主审批'));
+    await tester.pumpAndSettle();
+    expect(
+      api.calls.where(
+        (call) => call.contains('device-policy') && call.contains('true'),
+      ),
+      hasLength(1),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('account leave confirmation explicitly covers every device', (
+    tester,
+  ) async {
+    final api = await pump(tester, role: 'member', controls: true);
+    await tester.tap(find.text('退出房间'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('此账号的所有设备都会退出'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(api.calls.where((call) => call.contains('/leave')), isEmpty);
+  });
 
   testWidgets(
     'overview cards show people counts and open a separate detail view',
@@ -288,6 +397,10 @@ void main() {
     'room device opens shared details with room-scoped live peer data',
     (tester) async {
       await pump(tester, role: 'member', snapshot: _snapshot());
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('room-device-device-1')),
+      );
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('room-device-device-1')));
       await tester.pumpAndSettle();
       expect(find.byType(Dialog), findsOneWidget);

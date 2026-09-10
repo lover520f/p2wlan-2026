@@ -50,6 +50,8 @@ class _RoomsPageState extends State<RoomsPage> {
   List<FriendRoom> _rooms = [];
   RoomRoster? _roster;
   final Map<String, RoomRoster> _rosters = {};
+  final _localIdentities = <String, Map<String, String>>{};
+  final _autoConnect = <String, bool>{};
   List<Map<String, dynamic>> _invites = [];
   String? _selectedId;
   String? _error;
@@ -198,6 +200,26 @@ class _RoomsPageState extends State<RoomsPage> {
     super.dispose();
   }
 
+  Future<void> _loadLocalIdentity(FriendRoom room) async {
+    final settings = widget.settingsStore.settings;
+    try {
+      final identity = await widget.statusStore.daemonController
+          .roomDeviceIdentity(selectRoomSettings(settings, room));
+      if (!mounted ||
+          !_sameSession ||
+          widget.settingsStore.settings.authToken != settings.authToken) {
+        return;
+      }
+      if (identity != null &&
+          (identity['public_key'] != _localIdentities[room.id]?['public_key'] ||
+              identity['node_id'] != _localIdentities[room.id]?['node_id'])) {
+        setState(() => _localIdentities[room.id] = identity);
+      }
+    } catch (_) {
+      /* No readable local profile yet. */
+    }
+  }
+
   Future<void> _refresh({bool silent = false}) async {
     if (!mounted || !_sameSession || _refreshing) return;
     _refreshing = true;
@@ -213,6 +235,13 @@ class _RoomsPageState extends State<RoomsPage> {
       }
       final id = rooms.any((room) => room.id == selected) ? selected : null;
       final roster = id == null ? null : await _api.roster(id);
+      if (roster != null && _parallel.supported && _canConnect) {
+        final preference = await _parallel.connectionPreference(roster.room);
+        _autoConnect[roster.room.id] = preference.autoConnect;
+      }
+      if (roster != null && _canConnect) {
+        unawaited(_loadLocalIdentity(roster.room));
+      }
       // Older servers lack card summaries; fetch their rosters in bounded batches.
       final summaries = <String, RoomRoster>{};
       final legacy = rooms
@@ -463,7 +492,7 @@ class _RoomsPageState extends State<RoomsPage> {
     if (values == null || !mounted) return;
     await _run(() async {
       _selectedId = (await _api.join(values[0].trim(), password: values[1])).id;
-    }, success: '已加入房间，点击“连接”开始互联');
+    }, success: '账号已加入房间，点击“连接本机”开始互联');
   }
 
   Future<void> _joinWithLink([String initial = '']) async {
@@ -488,7 +517,7 @@ class _RoomsPageState extends State<RoomsPage> {
     await _run(() async {
       final invite = RoomInvitation.parse(values[0], _api.server);
       _selectedId = (await _api.join(invite.code, invitation: invite.token)).id;
-    }, success: '已加入房间，点击“连接”开始互联');
+    }, success: '账号已加入房间，点击“连接本机”开始互联');
   }
 
   Future<void> _connect(FriendRoom? room) async {
@@ -544,7 +573,8 @@ class _RoomsPageState extends State<RoomsPage> {
           ? await widget.statusStore.stopPrimaryDaemon()
           : await _parallel.disconnect(room.id);
       if (!result.ok) throw RoomException(result.message);
-    }, success: '已断开此房间，其他房间保持运行');
+      await _parallel.forgetConnectionIntent(room);
+    }, success: '已断开本机，其他设备和房间保持运行');
   }
 
   Future<void> _edit(FriendRoom room, bool password) async {
@@ -705,12 +735,75 @@ class _RoomsPageState extends State<RoomsPage> {
     }, success: '房间设备已删除');
   }
 
+  Map<String, dynamic>? _accessFor(
+    FriendRoom room,
+    Map<String, dynamic> device,
+  ) {
+    for (final access
+        in _rosters[room.id]?.deviceAccess ?? <Map<String, dynamic>>[]) {
+      if ((device['id'] != null && access['device_id'] == device['id']) ||
+          (device['public_key'] != null &&
+              access['public_key'] == device['public_key'])) {
+        return access;
+      }
+    }
+    return null;
+  }
+
+  bool _isLocalDevice(FriendRoom room, Map<String, dynamic> device) {
+    final identity = _localIdentities[room.id];
+    if (identity == null) return false;
+    return (identity['node_id']!.isNotEmpty &&
+            (device['id'] == identity['node_id'] ||
+                device['node_id'] == identity['node_id'])) ||
+        (identity['public_key'] != null &&
+            _accessFor(room, device)?['public_key'] == identity['public_key']);
+  }
+
+  Future<void> _controlDevice(
+    FriendRoom room,
+    Map<String, dynamic> device,
+    Map<String, dynamic> access,
+    String action,
+  ) async {
+    final title = switch (action) {
+      'disconnect' => '断开此设备',
+      'block' => '禁止此设备连接此房间',
+      'unblock' => '解除设备限制',
+      _ => '批准此设备',
+    };
+    final message = switch (action) {
+      'disconnect' => '只断开这台设备，并停止其自动恢复连接。账号仍是成员，其他设备保持连接。之后可以在该设备上手动连接。',
+      'block' => '这台设备将断开，解除限制前无法连接此房间。同账号其他设备不受影响。',
+      _ => '设备获得连接资格，但不会自动上线。请在该设备上点击“连接本机”。',
+    };
+    if (!await _confirm(title, message) || !mounted) return;
+    await _run(() async {
+      await _api.request('POST', [
+        room.id,
+        'device-access',
+        access['id'] as String,
+        action,
+      ]);
+      if (_isLocalDevice(room, device) &&
+          (action == 'disconnect' || action == 'block')) {
+        final stopped = await _parallel.disconnect(room.id);
+        if (!stopped.ok) throw RoomException(stopped.message);
+        if (widget.settingsStore.settings.networkId == room.id && _canConnect) {
+          final primary = await widget.statusStore.stopPrimaryDaemon();
+          if (!primary.ok) throw RoomException(primary.message);
+        }
+        await _parallel.forgetConnectionIntent(room);
+      }
+    }, success: '$title：已完成');
+  }
+
   Future<void> _leave(FriendRoom room) async {
     if (!await _confirm(
           room.isOwner ? '解散房间' : '退出房间',
           room.isOwner
               ? '将移除所有成员并撤销房间凭证。此操作不可恢复，重新创建会获得新房间号。'
-              : '你的房间设备会被移除，个人网络和其他房间不受影响。',
+              : '此账号的所有设备都会退出该房间。只想让当前设备下线，请使用“断开本机”。个人网络和其他房间不受影响。',
         ) ||
         !mounted) {
       return;
@@ -724,6 +817,7 @@ class _RoomsPageState extends State<RoomsPage> {
           if (!stopped.ok) throw const RoomException('本地房间网络无法停止，尚未退出房间');
         }
       }
+      await _parallel.forgetConnectionIntent(room);
       await _api.request(room.isOwner ? 'DELETE' : 'POST', [
         room.id,
         if (!room.isOwner) 'leave',
@@ -1009,6 +1103,20 @@ class _RoomsPageState extends State<RoomsPage> {
     final devices = [
       for (final device in roster.devices) {...device},
     ];
+    for (final access in roster.deviceAccess) {
+      if (!devices.any(
+        (device) =>
+            device['id'] == access['device_id'] && access['device_id'] != '',
+      )) {
+        devices.add({
+          'device_name': access['device_name'],
+          'user_id': access['user_id'],
+          'platform': access['platform'],
+          'public_key': access['public_key'],
+          'online': false,
+        });
+      }
+    }
     for (final peer in peers) {
       if (!devices.any(
         (d) =>
@@ -1047,29 +1155,24 @@ class _RoomsPageState extends State<RoomsPage> {
             padding: EdgeInsets.all(20),
             child: Text('还没有设备连接。连接房间后，设备 IP 和连接质量会显示在这里。'),
           ),
-        for (final device in [
-          ...devices.where(
-            (d) =>
-                _deviceOnline(d, snapshot, peers) &&
-                d['virtual_ip'] != snapshot?.virtualIp,
-          ),
-          ...devices.where((d) => d['virtual_ip'] == snapshot?.virtualIp),
-          ...devices.where(
-            (d) =>
-                !_deviceOnline(d, snapshot, peers) &&
-                d['virtual_ip'] != snapshot?.virtualIp,
-          ),
-        ])
-          _deviceCard(roster.room, device, snapshot, peers),
-        for (final member in roster.members)
-          if (!devices.any((d) => d['user_id'] == member['user_id']))
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                '${_memberLabel(member['user_id'] as String? ?? '')} · 暂无设备记录',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
+        for (final user in <String>{
+          ...roster.members.map((member) => member['user_id'] as String? ?? ''),
+          ...devices.map((device) => device['user_id'] as String? ?? ''),
+        }) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              '${user.isEmpty ? '成员信息同步中' : _memberLabel(user)} · ${user == roster.room.ownerId ? '房主' : '成员'} · ${devices.where((d) => (d['user_id'] ?? '') == user).length} 台设备',
+              style: Theme.of(context).textTheme.titleSmall,
             ),
+          ),
+          if (!devices.any((d) => (d['user_id'] ?? '') == user))
+            const Text('尚无设备连接'),
+          for (final device in devices.where(
+            (d) => (d['user_id'] ?? '') == user,
+          ))
+            _deviceCard(roster.room, device, snapshot, peers),
+        ],
       ],
     );
   }
@@ -1167,7 +1270,9 @@ class _RoomsPageState extends State<RoomsPage> {
     bool interactive = true,
   }) {
     final ip = device['virtual_ip'] as String? ?? '';
-    final local = snapshot != null && ip.isNotEmpty && ip == snapshot.virtualIp;
+    final local =
+        _isLocalDevice(room, device) ||
+        (snapshot != null && ip.isNotEmpty && ip == snapshot.virtualIp);
     PeerSnapshot? peer;
     for (final candidate in peers) {
       if (candidate.nodeId == device['node_id'] ||
@@ -1176,7 +1281,9 @@ class _RoomsPageState extends State<RoomsPage> {
         break;
       }
     }
-    final online = _deviceOnline(device, snapshot, peers);
+    final access = _accessFor(room, device);
+    final state = access?['state'] as String? ?? 'allowed';
+    final online = state == 'allowed' && _deviceOnline(device, snapshot, peers);
     final path = local
         ? '本机'
         : !online
@@ -1216,7 +1323,9 @@ class _RoomsPageState extends State<RoomsPage> {
         : '$latency ms';
     return _surfaceCard(
       child: InkWell(
-        key: ValueKey('room-device-${device['id'] ?? ip}'),
+        key: ValueKey(
+          'room-device-${device['id'] ?? device['public_key'] ?? ip}',
+        ),
         onTap: interactive ? () => _showRoomDeviceDetails(room, device) : null,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
@@ -1245,7 +1354,18 @@ class _RoomsPageState extends State<RoomsPage> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  _stateBadge(online ? '在线' : '离线', statusColor),
+                  _stateBadge(
+                    state == 'blocked'
+                        ? '已禁止'
+                        : state == 'pending'
+                        ? '待审批'
+                        : state == 'paused'
+                        ? '已断开'
+                        : online
+                        ? '在线'
+                        : '离线',
+                    statusColor,
+                  ),
                   if (interactive) ...[
                     const SizedBox(width: 6),
                     Icon(
@@ -1254,16 +1374,58 @@ class _RoomsPageState extends State<RoomsPage> {
                       color: colors.onSurfaceVariant,
                     ),
                   ],
-                  if (room.isOwner && device['id'] is String)
+                  if ((room.isOwner ||
+                          userId == _api.userId &&
+                              state != 'pending' &&
+                              (state != 'blocked' ||
+                                  access?['blocked_by'] == _api.userId)) &&
+                      (access != null ||
+                          room.isOwner && device['id'] is String))
                     PopupMenuButton<String>(
                       tooltip: '管理设备',
                       enabled: !_busy,
                       onSelected: (action) => action == 'ip'
                           ? _changeIp(room, device)
-                          : _deleteDevice(room, device),
-                      itemBuilder: (_) => const [
-                        PopupMenuItem(value: 'ip', child: Text('分配 IP')),
-                        PopupMenuItem(value: 'delete', child: Text('删除设备')),
+                          : action == 'delete'
+                          ? _deleteDevice(room, device)
+                          : _controlDevice(room, device, access!, action),
+                      itemBuilder: (_) => [
+                        if (room.isOwner &&
+                            device['id'] is String &&
+                            (device['id'] as String).isNotEmpty)
+                          const PopupMenuItem(
+                            value: 'ip',
+                            child: Text('分配 IP'),
+                          ),
+                        if (access != null) ...[
+                          if (state == 'allowed')
+                            const PopupMenuItem(
+                              value: 'disconnect',
+                              child: Text('断开此设备'),
+                            ),
+                          if (state != 'blocked' &&
+                              (state != 'pending' || room.isOwner))
+                            const PopupMenuItem(
+                              value: 'block',
+                              child: Text('禁止此设备连接此房间'),
+                            ),
+                          if (state == 'blocked' &&
+                              (room.isOwner ||
+                                  access['blocked_by'] == _api.userId))
+                            const PopupMenuItem(
+                              value: 'unblock',
+                              child: Text('解除设备限制'),
+                            ),
+                          if (state == 'pending' && room.isOwner)
+                            const PopupMenuItem(
+                              value: 'approve',
+                              child: Text('批准此设备'),
+                            ),
+                        ] else if (room.isOwner)
+                          const PopupMenuItem(
+                            value: 'delete',
+                            child: Text('删除设备'),
+                          ),
                       ],
                     ),
                 ],
@@ -1418,10 +1580,10 @@ class _RoomsPageState extends State<RoomsPage> {
                         ),
                         label: Text(
                           connection != null || primaryConnected
-                              ? '断开连接'
+                              ? '断开本机'
                               : active
-                              ? '重新连接'
-                              : '连接',
+                              ? '重新连接本机'
+                              : '连接本机',
                         ),
                       ),
                     OutlinedButton.icon(
@@ -1475,6 +1637,18 @@ class _RoomsPageState extends State<RoomsPage> {
             ),
           ),
         ),
+        if (_parallel.supported && _canConnect)
+          SwitchListTile.adaptive(
+            title: const Text('启动时自动连接此房间'),
+            subtitle: const Text('仅对本机生效；手动或远程断开后，需重新手动连接'),
+            value: _autoConnect[room.id] ?? false,
+            onChanged: _busy
+                ? null
+                : (value) => _run(() async {
+                    await _parallel.setAutoConnect(room, value);
+                    _autoConnect[room.id] = value;
+                  }),
+          ),
         const SizedBox(height: 16),
         _deviceList(roster),
         if (roster.members.any((member) => !member.containsKey('username')))
@@ -1525,6 +1699,23 @@ class _RoomsPageState extends State<RoomsPage> {
             children: [
               ...[
                 const Divider(height: 28),
+                if (room.deviceControls)
+                  SwitchListTile.adaptive(
+                    title: const Text('新设备需要房主审批'),
+                    subtitle: const Text(
+                      '已有设备保持当前权限；新设备批准后仍需在本机连接。房主身份属于账号，不绑定创建房间的设备。',
+                    ),
+                    value: roster.deviceApprovalRequired,
+                    onChanged: _busy
+                        ? null
+                        : (value) => _run(() async {
+                            await _api.request(
+                              'PUT',
+                              [room.id, 'device-policy'],
+                              {'require_approval': value},
+                            );
+                          }),
+                  ),
                 SwitchListTile.adaptive(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('锁定新成员加入'),

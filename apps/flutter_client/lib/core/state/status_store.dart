@@ -10,8 +10,10 @@ import '../lifecycle/mobile_lifecycle_coordinator.dart';
 import '../models/diagnostics_models.dart';
 import 'settings_store.dart';
 import '../rooms/parallel_rooms.dart';
+import '../rooms/room_connection_preferences.dart';
 import '../rooms/desktop_room_runtime.dart';
 import '../rooms/room_profiles.dart';
+import '../rooms/room_api.dart';
 
 part 'status_store_session.dart';
 
@@ -36,6 +38,7 @@ class StatusStore extends ChangeNotifier {
            ParallelRooms(
              readSettings: () => settingsStore.settings,
              runtimeFactory: DesktopRoomRuntime.new,
+             preferences: RoomConnectionPreferences(persistent: true),
            ),
        lifecycleCoordinator =
            lifecycleCoordinator ?? MobileLifecycleCoordinator(),
@@ -540,11 +543,70 @@ class StatusStore extends ChangeNotifier {
     }
   }
 
+  bool _primaryRoomPolicyChecking = false;
+  DateTime? _lastPrimaryRoomPolicyCheck;
+
+  Future<void> _checkPrimaryRoomPolicy(int generation) async {
+    final settings = settingsStore.settings;
+    if (!Platform.isAndroid ||
+        !isRoomNetwork(settings.networkId) ||
+        _primaryRoomPolicyChecking ||
+        settings.authToken.isEmpty) {
+      return;
+    }
+    final now = DateTime.now();
+    if (_lastPrimaryRoomPolicyCheck != null &&
+        now.difference(_lastPrimaryRoomPolicyCheck!) <
+            const Duration(seconds: 5)) {
+      return;
+    }
+    _primaryRoomPolicyChecking = true;
+    _lastPrimaryRoomPolicyCheck = now;
+    final api = RoomApi(
+      server: settings.controlServer,
+      token: settings.authToken,
+    );
+    try {
+      String? reason;
+      try {
+        final roster = await api.roster(settings.networkId);
+        final identity = await daemonController.roomDeviceIdentity(settings);
+        if (identity != null) {
+          for (final access in roster.deviceAccess) {
+            if (access['public_key'] == identity['public_key'] &&
+                access['state'] != 'allowed') {
+              reason = '本机已被远程断开或限制连接，请检查房间设备权限';
+            }
+          }
+        }
+      } on RoomException catch (error) {
+        if (error.code != 'room_access') rethrow;
+        reason = '此账号已退出或被移出房间';
+      }
+      if (reason != null &&
+          !_disposed &&
+          generation == _refreshGeneration &&
+          accountSessionKey(settings) ==
+              accountSessionKey(settingsStore.settings)) {
+        await stopPrimaryDaemon();
+        _lastError = reason;
+        if (!_disposed) notifyListeners();
+      }
+    } catch (_) {
+      // Control-plane outages are handled by the daemon's bounded room lease.
+      // They must not be mistaken for an explicit remote disconnect.
+    } finally {
+      api.close();
+      _primaryRoomPolicyChecking = false;
+    }
+  }
+
   Future<void> _refreshOnce(
     String url,
     int generation, {
     required bool throttleMetrics,
   }) async {
+    unawaited(_checkPrimaryRoomPolicy(generation));
     final stopwatch = Stopwatch()..start();
     final appEpoch = lifecycleCoordinator.appEpoch;
     bool acceptsLifecycle() =>

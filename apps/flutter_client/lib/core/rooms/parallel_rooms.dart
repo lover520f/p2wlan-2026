@@ -9,11 +9,12 @@ import '../diagnostics/support_log_protocol.dart';
 import '../models/diagnostics_models.dart';
 import 'room_api.dart';
 import 'room_profiles.dart';
+import 'room_connection_preferences.dart';
 
 enum RoomConnectionPhase { starting, running, unavailable, stopping, failed }
 
 class ParallelRoomPlan {
-  ParallelRoomPlan(AppSettings account, this.room) {
+  ParallelRoomPlan(AppSettings account, this.room, {this.automatic = false}) {
     final selected = selectRoomSettings(account, room);
     profileId = roomProfileId(selected);
     final port =
@@ -27,6 +28,7 @@ class ParallelRoomPlan {
   }
 
   final FriendRoom room;
+  final bool automatic;
   late final String profileId;
   late final AppSettings settings;
 }
@@ -57,9 +59,11 @@ class ParallelRooms extends ChangeNotifier {
     required this.readSettings,
     required this.runtimeFactory,
     bool? supported,
+    RoomConnectionPreferences? preferences,
     this.maxConnections = 8,
     this.refreshInterval = const Duration(seconds: 5),
-  }) : supported = supported ?? platformSupported {
+  }) : preferences = preferences ?? RoomConnectionPreferences(),
+       supported = supported ?? platformSupported {
     if (maxConnections < 1 || maxConnections > 32) {
       throw ArgumentError.value(maxConnections, 'maxConnections');
     }
@@ -69,6 +73,7 @@ class ParallelRooms extends ChangeNotifier {
   static bool get platformSupported =>
       Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
+  final RoomConnectionPreferences preferences;
   final AppSettings Function() readSettings;
   final RoomRuntimeFactory runtimeFactory;
   final bool supported;
@@ -229,23 +234,58 @@ class ParallelRooms extends ChangeNotifier {
     }
   }
 
-  Future<DaemonCommandResult> connect(FriendRoom room) {
+  Future<DaemonCommandResult> connect(
+    FriendRoom room, {
+    bool automatic = false,
+  }) {
     if (!supported) return Future.value(_fail('当前平台尚未接入多房间并行运行时'));
     if (_disposed || _stoppingAll != null || connectionsPaused) {
       return Future.value(_fail('网络正在关闭，未启动房间'));
     }
     if (_credentialKey(readSettings()) != _credentials) {
       return credentialsChanged().then(
-        (result) => result.ok ? connect(room) : result,
+        (result) => result.ok ? connect(room, automatic: automatic) : result,
       );
     }
     final epoch = _epoch;
     final credentials = _credentialKey(readSettings());
-    return _enqueue(room.id, () => _connect(room, epoch, credentials));
+    return _enqueue(
+      room.id,
+      () => _connect(room, epoch, credentials, automatic),
+    );
   }
 
   Future<DaemonCommandResult> disconnect(String roomId) =>
-      _stoppingAll ?? _enqueue(roomId, () => _disconnect(roomId));
+      _stoppingAll ??
+      _enqueue(roomId, () async {
+        final entry = _sessions[roomId];
+        if (entry != null) {
+          try {
+            await preferences.update(entry.plan.profileId, wanted: false);
+          } catch (_) {
+            final result = await _disconnect(roomId);
+            return result.ok ? _fail('本机已断开，但无法保存停止自动连接设置，请检查本地目录权限') : result;
+          }
+        }
+        return _disconnect(roomId);
+      });
+
+  Future<RoomConnectionPreference> connectionPreference(FriendRoom room) =>
+      preferences.read(ParallelRoomPlan(readSettings(), room).profileId);
+
+  Future<void> setAutoConnect(FriendRoom room, bool enabled) async {
+    await preferences.update(
+      ParallelRoomPlan(readSettings(), room).profileId,
+      autoConnect: enabled,
+      wanted: enabled,
+    );
+    _notify();
+  }
+
+  Future<void> forgetConnectionIntent(FriendRoom room) => preferences.update(
+    ParallelRoomPlan(readSettings(), room).profileId,
+    wanted: false,
+  );
 
   Future<DaemonCommandResult> _enqueue(
     String id,
@@ -281,6 +321,7 @@ class ParallelRooms extends ChangeNotifier {
     FriendRoom room,
     int epoch,
     String credentials,
+    bool automatic,
   ) async {
     if (!_accepts(epoch, credentials)) return _fail('登录状态已变化，已取消连接');
     if (_sessions.values.any(
@@ -297,7 +338,7 @@ class ParallelRooms extends ChangeNotifier {
       return _fail('已达到并行房间上限 $maxConnections');
     }
     final account = readSettings();
-    final plan = ParallelRoomPlan(account, room);
+    final plan = ParallelRoomPlan(account, room, automatic: automatic);
     final conflict = _conflict(plan, account);
     if (conflict != null) return _fail(conflict);
     final entry = ParallelRoomSession(plan, runtimeFactory(plan));
@@ -311,9 +352,21 @@ class ParallelRooms extends ChangeNotifier {
     _notify();
     DaemonCommandResult started;
     try {
-      started = await entry.runtime.start();
-    } catch (_) {
-      started = _fail('房间启动失败，需要清理本地运行时');
+      if (!automatic) await preferences.update(plan.profileId, wanted: true);
+      started = _accepts(epoch, credentials)
+          ? await entry.runtime.start()
+          : _fail('登录状态已变化，连接已取消');
+    } catch (error) {
+      if (error is RoomConnectionStopped) {
+        try {
+          await preferences.update(plan.profileId, wanted: false);
+        } catch (_) {
+          /* Cleanup must still run. Server policy prevents automatic resume. */
+        }
+      }
+      started = _fail(
+        error is RoomException ? error.message : '房间启动失败，需要清理本地运行时',
+      );
     }
     if (!started.ok || !_accepts(epoch, credentials)) {
       entry.phase = RoomConnectionPhase.failed;
@@ -335,7 +388,7 @@ class ParallelRooms extends ChangeNotifier {
     await _refresh(entry);
     _schedulePoll();
     if (entry.phase != RoomConnectionPhase.running) {
-      return _fail('房间进程已启动，但地址或路由尚未就绪；可重试状态检查或断开');
+      return _fail(entry.message ?? '房间进程已启动，但地址或路由尚未就绪；可重试状态检查或断开');
     }
     return started;
   }
@@ -461,6 +514,13 @@ class ParallelRooms extends ChangeNotifier {
       if (_credentialKey(account) != _credentialKey(readSettings())) return;
       for (final room in rooms) {
         await recover(room);
+        final preference = await connectionPreference(room);
+        if (preference.autoConnect &&
+            preference.wanted &&
+            session(room.id) == null &&
+            _credentialKey(account) == _credentialKey(readSettings())) {
+          await connect(room, automatic: true);
+        }
       }
     } catch (_) {
       lastError = '无法恢复房间运行时，请检查登录和控制服务器';
@@ -564,7 +624,22 @@ class ParallelRooms extends ChangeNotifier {
         replaceSnapshot: true,
         phase: entry.phase,
       );
-    } catch (_) {
+    } catch (error) {
+      if (error is RoomConnectionStopped &&
+          !_disposed &&
+          revision == entry.revision &&
+          identical(_sessions[entry.plan.room.id], entry)) {
+        var message = error.message;
+        try {
+          await preferences.update(entry.plan.profileId, wanted: false);
+        } catch (_) {
+          message = '$message；无法保存本地自动连接设置';
+        }
+        entry.message = message;
+        await _disconnect(entry.plan.room.id);
+        lastError = message;
+        return;
+      }
       if (!_disposed &&
           revision == entry.revision &&
           identical(_sessions[entry.plan.room.id], entry)) {

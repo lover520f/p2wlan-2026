@@ -56,6 +56,14 @@ extension DaemonControllerAndroidVpn on DaemonController {
             requestJson,
           ),
         );
+        if (prepared is Map && prepared['error'] is String) {
+          throw RoomException(switch (prepared['error']) {
+            'room_device_pending' => '本机正在等待房主审批，批准后请重新连接',
+            'room_device_blocked' => '本机已被禁止连接此房间，请解除限制后重试',
+            'room_device_paused' => '本机已被远程断开，请重新手动连接',
+            _ => '房间 IP 注册失败，请检查成员资格和设备权限',
+          });
+        }
         if (prepared is! Map ||
             prepared['error'] != null ||
             prepared['cidr'] is! String ||

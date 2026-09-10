@@ -497,6 +497,11 @@ func (s *Server) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeDeviceMutationError(w http.ResponseWriter, err error, fallback string) {
+	if errors.Is(err, database.ErrRoomDeviceBlocked) || errors.Is(err, database.ErrRoomDevicePaused) || errors.Is(err, database.ErrRoomDevicePending) || errors.Is(err, database.ErrRoomAccess) {
+		roomError(w, err)
+		return
+	}
+
 	message := strings.TrimSpace(err.Error())
 	if message == "" {
 		message = fallback

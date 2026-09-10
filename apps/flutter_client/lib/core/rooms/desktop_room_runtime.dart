@@ -12,6 +12,7 @@ class DesktopRoomRuntime implements RoomRuntime {
     DaemonController? daemonController,
     this._hasCredentials,
     this._checkRoutes,
+    this.controlApiFactory,
   }) {
     _api =
         diagnosticsApi ??
@@ -23,6 +24,7 @@ class DesktopRoomRuntime implements RoomRuntime {
         DaemonController(diagnosticsApi: _api, roomInstanceId: plan.profileId);
   }
 
+  final RoomApi Function()? controlApiFactory;
   final ParallelRoomPlan plan;
   late final DiagnosticsApi _api;
   late final DaemonController _daemon;
@@ -71,7 +73,12 @@ class DesktopRoomRuntime implements RoomRuntime {
     if (conflict != null) {
       return DaemonCommandResult(ok: false, message: conflict);
     }
-    return _daemon.start(plan.settings);
+    await _requestAccess(resume: !plan.automatic);
+    final result = await _daemon.start(plan.settings);
+    // A first registration can create a pending approval before it has an IP.
+    // Surface that decision instead of the generic daemon startup timeout.
+    if (!result.ok) await _requestAccess(resume: false);
+    return result;
   }
 
   @override
@@ -80,6 +87,7 @@ class DesktopRoomRuntime implements RoomRuntime {
 
   @override
   Future<DiagnosticsSnapshot> status() async {
+    await _checkRemoteAccess();
     final snapshot = await _api.fetchStatus(plan.settings.diagnosticsUrl);
     if (snapshot.networkId != plan.room.id ||
         !validRoomIp(snapshot.virtualIp, plan.room.cidr)) {
@@ -88,6 +96,82 @@ class DesktopRoomRuntime implements RoomRuntime {
     final routes = await _api.verifyRoutes(plan.settings.diagnosticsUrl);
     if (!routes.healthy) throw const RoomException('房间路由未通过校验');
     return snapshot;
+  }
+
+  DateTime? _lastAccessCheck;
+
+  Future<void> _requestAccess({required bool resume}) async {
+    if (!plan.room.deviceControls) return;
+    final identity = await _daemon.roomDeviceIdentity(plan.settings);
+    if (identity == null) return;
+    final api =
+        controlApiFactory?.call() ??
+        RoomApi(
+          server: plan.settings.controlServer,
+          token: plan.settings.authToken,
+        );
+    try {
+      await api.request(
+        'POST',
+        [plan.room.id, 'device-access'],
+        {
+          'public_key': identity['public_key'],
+          'device_name': identity['device_name'],
+          'platform': identity['platform'],
+          'resume': resume,
+        },
+      );
+    } on RoomException catch (error) {
+      if (const [
+        'room_device_paused',
+        'room_device_blocked',
+        'room_device_pending',
+        'room_access',
+      ].contains(error.code)) {
+        throw RoomConnectionStopped(error.message);
+      }
+      rethrow;
+    } finally {
+      api.close();
+    }
+  }
+
+  Future<void> _checkRemoteAccess() async {
+    if (!plan.room.deviceControls) return;
+    final now = DateTime.now();
+    if (_lastAccessCheck != null &&
+        now.difference(_lastAccessCheck!) < const Duration(seconds: 2)) {
+      return;
+    }
+    final identity = await _daemon.roomDeviceIdentity(plan.settings);
+    if (identity == null) return;
+    final api =
+        controlApiFactory?.call() ??
+        RoomApi(
+          server: plan.settings.controlServer,
+          token: plan.settings.authToken,
+        );
+    try {
+      final roster = await api.roster(plan.room.id);
+      for (final access in roster.deviceAccess) {
+        if (access['public_key'] != identity['public_key']) continue;
+        if (access['state'] != 'allowed') {
+          throw RoomConnectionStopped(switch (access['state']) {
+            'blocked' => '本机已被禁止连接此房间',
+            'pending' => '本机正在等待房主审批',
+            _ => '本机已被远程断开，请手动重新连接',
+          });
+        }
+      }
+      _lastAccessCheck = now;
+    } on RoomException catch (error) {
+      if (error.code == 'room_access') {
+        throw const RoomConnectionStopped('该账号已退出或被移出房间，本机连接已停止');
+      }
+      rethrow;
+    } finally {
+      api.close();
+    }
   }
 
   @override

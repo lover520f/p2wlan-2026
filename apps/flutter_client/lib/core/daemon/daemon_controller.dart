@@ -204,6 +204,34 @@ class DaemonController {
 
   ClientBuildInfo get clientBuildInfo => ClientBuildInfo.current;
 
+  /// Read the room installation identity without exposing private credentials.
+  Future<Map<String, String>?> roomDeviceIdentity(AppSettings settings) async {
+    final directory = Platform.isAndroid
+        ? await resolveApplicationSupportDirectory()
+        : null;
+    final file = directory == null
+        ? _defaultConfigPath(settings)
+        : networkConfigFile(
+            File('${directory.path}/p2wlan-config.json'),
+            settings,
+          );
+    if (!await file.exists()) return null;
+    final config = jsonDecode(await file.readAsString()) as Map;
+    final network = config['network'] as Map;
+    final node = config['node'] as Map;
+    if (network['network_id'] != settings.networkId) return null;
+    final key = node['public_key'];
+    if (key is! String || key.isEmpty) return null;
+    return {
+      'public_key': key,
+      'device_name': settings.deviceName.isEmpty
+          ? (node['device_name'] as String? ?? '本机')
+          : settings.deviceName,
+      'platform': node['platform'] as String? ?? Platform.operatingSystem,
+      'node_id': node['node_id'] as String? ?? '',
+    };
+  }
+
   /// Recover only a live process belonging to this exact room profile.
   /// Credentials can survive a reboot or forced termination, and diagnostics
   /// can be unavailable while a process still needs to be stopped.
