@@ -3125,17 +3125,15 @@ impl Daemon {
                                 )
                                 .await;
                             }
-                        } else {
-                            if update.endpoint_changed {
-                                // Endpoint metadata changes are normal NAT/candidate
-                                // churn. They must not tear down a confirmed relay or
-                                // WireGuard session. A same-node restart is reset only
-                                // when a later peer offer carries a different encoded
-                                // candidate-generation incarnation.
-                                self.punch_attempts.cancel(&peer_info.node_id);
-                                if let Some(udp) = self.udp_transport.read().await.clone() {
-                                    udp.clear_pending_probes_for_peer(&peer_info.node_id).await;
-                                }
+                        } else if update.endpoint_changed {
+                            // Endpoint metadata changes are normal NAT/candidate
+                            // churn. They must not tear down a confirmed relay or
+                            // WireGuard session. A same-node restart is reset only
+                            // when a later peer offer carries a different encoded
+                            // candidate-generation incarnation.
+                            self.punch_attempts.cancel(&peer_info.node_id);
+                            if let Some(udp) = self.udp_transport.read().await.clone() {
+                                udp.clear_pending_probes_for_peer(&peer_info.node_id).await;
                             }
                         }
                         let was_offline = update.was_offline;

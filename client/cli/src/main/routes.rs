@@ -33,7 +33,7 @@ async fn route_command(config_path: &Path, command: RouteCommand) -> Result<(), 
             if value.get("healthy").and_then(Value::as_bool) != Some(true) {
                 return Err("路由校验未通过；可运行 p2wlan route repair 尝试修复".to_string());
             }
-            return Ok(());
+            Ok(())
         }
         RouteCommand::Repair { json } => {
             let url = diagnostics_endpoint(&config, "/routes/repair");
@@ -53,7 +53,7 @@ async fn route_command(config_path: &Path, command: RouteCommand) -> Result<(), 
                         .unwrap_or("unknown")
                 ));
             }
-            return Ok(());
+            Ok(())
         }
     }
 }

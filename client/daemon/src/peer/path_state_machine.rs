@@ -930,10 +930,8 @@ impl PathStateMachine {
                 }
             }
             self.revision = self.revision.wrapping_add(1);
-        } else {
-            if !decision.accepted() {
-                self.rejected_transitions = self.rejected_transitions.wrapping_add(1);
-            }
+        } else if !decision.accepted() {
+            self.rejected_transitions = self.rejected_transitions.wrapping_add(1);
         }
         PathTransitionOutcome {
             decision,
