@@ -14,6 +14,15 @@ class _RoomApi extends DiagnosticsApi {
   bool wrongNetwork = false;
   bool brokenStatus = true;
   @override
+  Future<RoutesResponse> verifyRoutes(String url) async => const RoutesResponse(
+    contractVersion: 1,
+    interfaceName: 'room-test',
+    mtu: 1420,
+    healthy: true,
+    conflictCount: 0,
+    entries: [],
+  );
+  @override
   Future<bool> fetchHealth(String url) async => false;
   @override
   Future<DiagnosticsSnapshot> fetchStatus(String url) async {
@@ -29,16 +38,26 @@ class _RoomDaemon extends DaemonController {
   _RoomDaemon(_RoomApi api) : super(diagnosticsApi: api);
   final operations = <String>[];
   bool stopWorks = true;
+  bool running = false;
+  bool failDiscovery = false;
+  @override
+  Future<bool> hasRoomRuntime() async {
+    if (failDiscovery) throw StateError('process query failed');
+    return running;
+  }
+
   String? conflict;
   @override
   Future<DaemonCommandResult> stop(String url) async {
     operations.add('stop');
+    if (stopWorks) running = false;
     return DaemonCommandResult(ok: stopWorks, message: 'stop');
   }
 
   @override
   Future<DaemonCommandResult> start(AppSettings settings) async {
     operations.add('start');
+    running = true;
     return const DaemonCommandResult(ok: true, message: 'start');
   }
 }
@@ -69,6 +88,83 @@ void main() {
     );
   });
   tearDown(() => runtime.close());
+
+  test('stale credentials alone do not represent a running room', () async {
+    expect(await runtime.exists(), isFalse);
+    expect(daemon.operations, isEmpty);
+  });
+
+  test('live room with unavailable diagnostics remains recoverable', () async {
+    daemon.running = true;
+    expect(await runtime.exists(), isTrue);
+    expect(api.brokenStatus, isTrue);
+  });
+
+  test(
+    'live room without credentials can still be discovered for cleanup',
+    () async {
+      daemon.running = true;
+      final missingCredentials = DesktopRoomRuntime(
+        api.plan,
+        diagnosticsApi: api,
+        daemonController: daemon,
+        hasCredentials: () async => false,
+      );
+      expect(await missingCredentials.exists(), isTrue);
+    },
+  );
+
+  test('process discovery requires an explicit room scope', () async {
+    final unscoped = DaemonController(diagnosticsApi: api);
+    await expectLater(unscoped.hasRoomRuntime(), throwsStateError);
+  });
+
+  test('process query failure is not reported as an absent room', () async {
+    daemon.failDiscovery = true;
+    await expectLater(runtime.exists(), throwsStateError);
+  });
+
+  test(
+    'disconnect then refresh with stale credentials allows reconnect',
+    () async {
+      final settings = AppSettings(
+        authToken: fixtures.token('a'),
+        controlServer: 'https://control.example',
+      );
+      final manager = ParallelRooms(
+        readSettings: () => settings,
+        supported: true,
+        refreshInterval: Duration.zero,
+        runtimeFactory: (plan) => DesktopRoomRuntime(
+          plan,
+          diagnosticsApi: api,
+          daemonController: daemon,
+          // Simulate the file that survives a forced exit and later stop calls.
+          hasCredentials: () async => true,
+          checkRoutes: (_) async => null,
+        ),
+      );
+      addTearDown(() async {
+        await manager.stopAll();
+        manager.dispose();
+      });
+      final room = fixtures.room(1);
+      daemon.running = true;
+      await manager.recover(room);
+      expect(manager.session(room.id)!.phase, RoomConnectionPhase.unavailable);
+      expect((await manager.disconnect(room.id)).ok, isTrue);
+      await manager.recover(room);
+      await manager.recover(room);
+      expect(manager.session(room.id), isNull);
+      api.brokenStatus = false;
+      expect((await manager.connect(room)).ok, isTrue);
+      expect(manager.session(room.id)!.phase, RoomConnectionPhase.running);
+      expect(
+        daemon.operations.where((operation) => operation == 'start'),
+        hasLength(1),
+      );
+    },
+  );
 
   test('own stale runtime is stopped before checking routes', () async {
     expect((await runtime.start()).ok, isTrue);

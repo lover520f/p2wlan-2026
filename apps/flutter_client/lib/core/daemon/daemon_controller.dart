@@ -203,6 +203,20 @@ class DaemonController {
   DaemonBuildInfo? _lastDaemonBuildInfo;
 
   ClientBuildInfo get clientBuildInfo => ClientBuildInfo.current;
+
+  /// Recover only a live process belonging to this exact room profile.
+  /// Credentials can survive a reboot or forced termination, and diagnostics
+  /// can be unavailable while a process still needs to be stopped.
+  Future<bool> hasRoomRuntime() async {
+    if (roomInstanceId == null) {
+      throw StateError('Room runtime discovery requires a room profile');
+    }
+    final pids = Platform.isWindows
+        ? await _findWindowsDaemonPids(requireReliableScan: true)
+        : await _findUnixDaemonPids(requireReliableScan: true);
+    return pids.isNotEmpty;
+  }
+
   DaemonBuildInfo? get lastDaemonBuildInfo => _lastDaemonBuildInfo;
   String get clientLogPath =>
       '${_defaultLogDir().path}${Platform.pathSeparator}${WindowsStartupTrace.fileName}';

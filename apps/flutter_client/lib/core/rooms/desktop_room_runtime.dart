@@ -29,21 +29,23 @@ class DesktopRoomRuntime implements RoomRuntime {
   final Future<bool> Function()? _hasCredentials;
   final Future<String?> Function(String)? _checkRoutes;
 
-  @override
-  Future<bool> exists() async => _hasCredentials != null
+  Future<bool> _credentialsExist() async => _hasCredentials != null
       ? await _hasCredentials()
       : await readRoomDiagnosticsAuthToken(plan.profileId) != null;
 
   @override
+  Future<bool> exists() => _daemon.hasRoomRuntime();
+
+  @override
   Future<DaemonCommandResult> start() async {
     if (await _api.fetchHealth(plan.settings.diagnosticsUrl) &&
-        !await exists()) {
+        !await _credentialsExist()) {
       return const DaemonCommandResult(
         ok: false,
         message: '房间诊断端口被其他进程占用，未停止任何进程。',
       );
     }
-    if (await exists()) {
+    if (await _credentialsExist() || await exists()) {
       try {
         final snapshot = await _api.fetchStatus(plan.settings.diagnosticsUrl);
         if (snapshot.networkId != plan.room.id) {

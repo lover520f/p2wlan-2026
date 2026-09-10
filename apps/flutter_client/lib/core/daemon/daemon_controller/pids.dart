@@ -219,15 +219,30 @@ extension DaemonControllerPids on DaemonController {
     return verified.length == 1 ? verified.single : null;
   }
 
-  Future<List<int>> _findWindowsDaemonPids() async {
+  Future<List<int>> _findWindowsDaemonPids({
+    bool requireReliableScan = false,
+  }) async {
     if (!Platform.isWindows) return const <int>[];
     final result = await _runWindowsPowerShell(
-      r'''@(Get-CimInstance Win32_Process -Filter "Name = 'p2wlan-daemon.exe'" -ErrorAction SilentlyContinue) | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress''',
+      '''@(Get-CimInstance Win32_Process -Filter "Name = 'p2wlan-daemon.exe'" -ErrorAction ${requireReliableScan ? 'Stop' : 'SilentlyContinue'}) | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress''',
     );
-    if (result.exitCode != 0) return const <int>[];
+    if (result.exitCode != 0) {
+      if (requireReliableScan) throw StateError('Room process query failed');
+      return const <int>[];
+    }
     try {
+      if (result.stdout.toString().trim().isEmpty) return const <int>[];
       final decoded = jsonDecode(result.stdout.toString());
       final rows = decoded is List ? decoded : [decoded];
+      if (requireReliableScan &&
+          rows.any(
+            (row) =>
+                row is! Map ||
+                row['ProcessId'] is! num ||
+                row['CommandLine'] is! String,
+          )) {
+        throw StateError('Room process identity is unavailable');
+      }
       return [
         for (final row in rows)
           if (row is Map &&
@@ -237,15 +252,21 @@ extension DaemonControllerPids on DaemonController {
             (row['ProcessId'] as num).toInt(),
       ];
     } on FormatException {
+      if (requireReliableScan) rethrow;
       return const <int>[];
     }
   }
 
   Future<int?> _findSingleDaemonPid() async {
-    if (Platform.isWindows) {
-      final matches = await _findWindowsDaemonPids();
-      return matches.length == 1 ? matches.single : null;
-    }
+    final matches = Platform.isWindows
+        ? await _findWindowsDaemonPids()
+        : await _findUnixDaemonPids();
+    return matches.length == 1 ? matches.single : null;
+  }
+
+  Future<List<int>> _findUnixDaemonPids({
+    bool requireReliableScan = false,
+  }) async {
     final result = await Process.run('ps', [
       'ax',
       '-o',
@@ -253,7 +274,10 @@ extension DaemonControllerPids on DaemonController {
       '-o',
       'command=',
     ]);
-    if (result.exitCode != 0) return null;
+    if (result.exitCode != 0) {
+      if (requireReliableScan) throw StateError('Room process query failed');
+      return const <int>[];
+    }
     final matches = <int>[];
     for (final line in result.stdout.toString().split('\n')) {
       final match = RegExp(r'^\s*(\d+)\s+(.+)$').firstMatch(line);
@@ -261,7 +285,7 @@ extension DaemonControllerPids on DaemonController {
       final candidate = int.tryParse(match.group(1)!);
       if (candidate != null && candidate != pid) matches.add(candidate);
     }
-    return matches.length == 1 ? matches.single : null;
+    return matches;
   }
 
   bool _matchesInstance(String command) => daemonCommandMatchesLog(
