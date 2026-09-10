@@ -1,4 +1,5 @@
 import 'package:p2wlan_flutter_client/shared/widgets/app_notice.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -1741,9 +1742,9 @@ class _RoomsPageState extends State<RoomsPage> {
                           child: Semantics(
                             liveRegion: true,
                             child: Card(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.errorContainer,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .errorContainer,
                               child: Padding(
                                 padding: const EdgeInsets.all(16),
                                 child: Row(

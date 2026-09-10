@@ -351,15 +351,19 @@ jobs:
           required_patterns=(
             'android-arm64.*\\.apk$'
             'ios-arm64.*\\.ipa$'
-            'flutter-linux-x64.*\\.tar\\.gz$'
+            'p2wlan-(flutter-)?linux-x64(-release)?\\.tar\\.gz$'
             'macos-arm64.*\\.dmg$'
             'macos-x64.*\\.dmg$'
             'windows-x64.*\\.(exe|zip)$'
             'linux-arm64-cli.*\\.tar\\.gz$'
             'linux-x64-cli.*\\.tar\\.gz$'
           )
-          max_attempts=30
-          sleep_seconds=10
+          # macOS cross-builds can take more than twenty minutes while the
+          # release workflow is still uploading the final architecture asset.
+          # Keep polling within this job's 35-minute timeout so a healthy
+          # release is not rejected while its asset set is still converging.
+          max_attempts=90
+          sleep_seconds=20
           ready=0
           for attempt in $(seq 1 "$max_attempts"); do
             gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$evidence/releases.json"

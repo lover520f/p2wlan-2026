@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 final _activeNotices = Expando<OverlayEntry>();
@@ -113,9 +114,8 @@ class _NoticeState extends State<_Notice> {
                             ),
                             const SizedBox(width: 8),
                             IconButton(
-                              tooltip: MaterialLocalizations.of(
-                                context,
-                              ).closeButtonTooltip,
+                              tooltip: MaterialLocalizations.of(context)
+                                  .closeButtonTooltip,
                               onPressed: widget.dismiss,
                               icon: const Icon(Icons.close_rounded, size: 18),
                             ),

@@ -170,9 +170,7 @@ class _RecentLogsPanelState extends State<_RecentLogsPanel> {
               ),
               const SizedBox(height: AppTokens.space8),
               Text(
-                strings.isZh
-                    ? '时间按系统本地时区显示，并保留时区偏移；原始日志未被改写。'
-                    : 'Times use the system local time zone with explicit offsets; original logs are unchanged.',
+                strings.isZh ? '时间按系统本地时区显示，并保留时区偏移；原始日志未被改写。' : 'Times use the system local time zone with explicit offsets; original logs are unchanged.',
                 style: TextStyle(
                   fontSize: 11,
                   color: themeTextSecondary(context),
