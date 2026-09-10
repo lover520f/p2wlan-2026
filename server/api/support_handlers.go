@@ -294,7 +294,19 @@ func validateSupportLogBundle(bundle supportLogBundle) (int, error) {
 		if bundle.Manifest.TotalInstances != instanceCount {
 			return 0, fmt.Errorf("manifest total_instances (%d) does not match instance count (%d)", bundle.Manifest.TotalInstances, instanceCount)
 		}
+		// A v2 client may send structured `instances` without duplicating every
+		// log in the legacy `files` array. In that form the room count comes from
+		// instance_type, not from room file names. Mixed file+instance payloads
+		// retain the file-based count for backward compatibility.
 		retainedRoomInstances := len(roomProfiles)
+		if len(bundle.Files) == 0 {
+			retainedRoomInstances = 0
+			for _, instance := range bundle.Instances {
+				if instance.InstanceType == "room" {
+					retainedRoomInstances++
+				}
+			}
+		}
 		if hasLegacyRoomFiles {
 			retainedRoomInstances++
 		}

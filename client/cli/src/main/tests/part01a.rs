@@ -515,4 +515,56 @@ fn path_policy_updates_direct_selection_mode() {
     set_config_value(&mut config, "relay-policy", "auto").unwrap();
     assert_eq!(config.relay.path_policy, PathPolicy::Auto);
     assert!(config.relay.prefer_direct);
+
+    set_config_value(&mut config, "relay-policy", "prefer-relay").unwrap();
+    assert_eq!(config.relay.path_policy, PathPolicy::Auto);
+    assert!(config.relay.prefer_direct);
+    set_config_value(&mut config, "relay-regions", "cn-east,cn-north").unwrap();
+    assert_eq!(
+        config.relay.preferred_regions,
+        vec!["cn-east".to_string(), "cn-north".to_string()]
+    );
+    set_config_value(&mut config, "relay-selection-timeout", "2500ms").unwrap();
+    assert_eq!(config.relay.selection_timeout_ms, 2500);
+    set_config_value(&mut config, "proxy-mode", "environment").unwrap();
+    assert_eq!(config.control.proxy_mode.as_label(), "environment");
+    set_config_value(&mut config, "proxy-mode", "direct").unwrap();
+    assert_eq!(config.control.proxy_mode.as_label(), "direct");
+    set_config_value(&mut config, "prefer-direct", "off").unwrap();
+    assert!(!config.relay.prefer_direct);
+    assert_eq!(config.relay.path_policy, PathPolicy::RelayOnly);
+    set_config_value(&mut config, "prefer-direct", "on").unwrap();
+    assert!(config.relay.prefer_direct);
+    assert_eq!(config.relay.path_policy, PathPolicy::Auto);
+}
+
+#[test]
+fn parses_route_room_and_support_commands() {
+    let route = Cli::try_parse_from(["p2wlan", "route", "repair", "--json"]).unwrap();
+    assert!(matches!(
+        route.command,
+        Commands::Route {
+            command: RouteCommand::Repair { json: true }
+        }
+    ));
+
+    let room = Cli::try_parse_from([
+        "p2wlan",
+        "room",
+        "device-ip",
+        "12345678",
+        "--device",
+        "dev-1",
+        "--ip",
+        "10.21.7.42",
+    ])
+    .unwrap();
+    assert!(matches!(room.command, Commands::Room { .. }));
+
+    let support = Cli::try_parse_from(["p2wlan", "support-bundle", "--include-rooms=false"])
+        .unwrap();
+    let Commands::SupportBundle(args) = support.command else {
+        panic!("expected support-bundle command");
+    };
+    assert!(!args.include_rooms);
 }

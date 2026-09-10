@@ -122,17 +122,49 @@ fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<(), S
                 .map(ToString::to_string)
                 .collect();
         }
-        "relay-policy" => match value {
+        "relay-regions" => {
+            config.relay.preferred_regions = value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToString::to_string)
+                .collect();
+        }
+        "relay-selection-timeout" | "relay-selection-timeout-ms" => {
+            let timeout = parse_millis(value, "relay-selection-timeout")?;
+            if !(100..=60000).contains(&timeout) {
+                return Err("relay-selection-timeout 必须在 100ms 到 60000ms 之间".to_string());
+            }
+            config.relay.selection_timeout_ms = timeout;
+        }
+        "relay-policy" => match value.trim().to_ascii_lowercase().as_str() {
             "auto" | "direct" => {
                 config.relay.prefer_direct = true;
                 config.relay.path_policy = PathPolicy::Auto;
             }
-            "relay" => {
+            "prefer-relay" | "relay-first" => {
+                config.relay.prefer_direct = true;
+                config.relay.path_policy = PathPolicy::Auto;
+            }
+            "relay" | "relay-only" => {
                 config.relay.prefer_direct = false;
                 config.relay.path_policy = PathPolicy::RelayOnly;
             }
-            _ => return Err("relay-policy 只支持 auto、direct 或 relay".to_string()),
+            _ => {
+                return Err(
+                    "relay-policy 只支持 auto、direct、prefer-relay 或 relay".to_string(),
+                )
+            }
         },
+        "prefer-direct" => {
+            let prefer_direct = parse_bool_config(value, "prefer-direct")?;
+            config.relay.prefer_direct = prefer_direct;
+            if prefer_direct && config.relay.path_policy == PathPolicy::RelayOnly {
+                config.relay.path_policy = PathPolicy::Auto;
+            } else if !prefer_direct {
+                config.relay.path_policy = PathPolicy::RelayOnly;
+            }
+        }
         "path-policy" => {
             let normalized = value.trim().to_ascii_lowercase();
             let policy = match normalized.as_str() {
@@ -149,7 +181,17 @@ fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<(), S
             config.relay.path_policy = policy;
             config.relay.prefer_direct = policy != PathPolicy::RelayOnly;
         }
-        "relay-startup-timeout" | "direct-timeout" => {
+        "proxy-mode" => match value.trim().to_ascii_lowercase().as_str() {
+            "direct" => {
+                config.control.proxy_mode = p2pnet_daemon::config::ControlProxyMode::Direct;
+            }
+            "environment" | "env" => {
+                config.control.proxy_mode =
+                    p2pnet_daemon::config::ControlProxyMode::Environment;
+            }
+            _ => return Err("proxy-mode 只支持 direct 或 environment".to_string()),
+        },
+        "relay-startup-timeout" | "relay-startup-timeout-ms" | "direct-timeout" => {
             let timeout = parse_millis(value, "relay-startup-timeout")?;
             if !(100..=60000).contains(&timeout) {
                 return Err("relay-startup-timeout 必须在 100ms 到 60000ms 之间".to_string());

@@ -77,12 +77,13 @@ async fn authenticate(path: &Path, args: AuthArgs, register: bool) -> Result<(),
             .map_err(|error| format!("无法生成配置：{error}"))?,
     };
     config.control.server_url = server.clone();
-    config.control.auth_token = token;
+    config.control.auth_token = token.clone();
     config.control.device_credential.clear();
     config.control.credential_issued = false;
     config.diagnostics.enabled = true;
     config.diagnostics.bind = DEFAULT_DIAGNOSTICS_BIND.to_string();
     save_config(&config, path)?;
+    save_cli_session_token(path, &token)?;
 
     println!(
         "{}成功：{}\n控制服务器：{}\n配置文件：{}",
@@ -104,8 +105,105 @@ async fn logout(path: &Path) -> Result<(), String> {
     config.control.device_credential.clear();
     config.control.credential_issued = false;
     save_config(&config, path)?;
+    clear_cli_session_token(path)?;
     println!("已退出登录，设备身份密钥和网络设置已保留。");
     Ok(())
+}
+
+/// Keep the account JWT available to user-facing control-plane commands even
+/// after the daemon exchanges it for a durable device credential and removes
+/// the JWT from its runtime config. The sidecar is never passed to the daemon
+/// and is always owner-readable only on Unix.
+fn cli_session_path(config_path: &Path) -> PathBuf {
+    config_path.with_extension("session")
+}
+
+fn save_cli_session_token(config_path: &Path, token: &str) -> Result<(), String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("控制服务器返回了空的 CLI 会话 token".to_string());
+    }
+    let path = cli_session_path(config_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("无法创建 CLI 会话目录 {}：{error}", parent.display()))?;
+    }
+    let temp = path.with_extension("session.tmp");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temp)
+        .map_err(|error| format!("无法创建 CLI 会话文件 {}：{error}", temp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = file
+            .metadata()
+            .map_err(|error| format!("无法读取 CLI 会话文件权限：{error}"))?
+            .permissions();
+        permissions.set_mode(0o600);
+        file.set_permissions(permissions)
+            .map_err(|error| format!("无法设置 CLI 会话文件权限：{error}"))?;
+    }
+    file.write_all(token.as_bytes())
+        .and_then(|_| file.write_all(b"\n"))
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("无法写入 CLI 会话文件：{error}"))?;
+    drop(file);
+    fs::rename(&temp, &path)
+        .map_err(|error| format!("无法保存 CLI 会话文件 {}：{error}", path.display()))
+}
+
+fn read_cli_session_token(config_path: &Path) -> Result<Option<String>, String> {
+    let path = cli_session_path(config_path);
+    #[cfg(unix)]
+    if let Ok(metadata) = fs::metadata(&path) {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(format!(
+                "CLI 会话文件 {} 权限过宽，请设置为 0600 或重新登录",
+                path.display()
+            ));
+        }
+    }
+    match fs::read_to_string(&path) {
+        Ok(value) => {
+            let token = value.trim();
+            if token.is_empty() {
+                Err(format!("CLI 会话文件 {} 为空，请重新登录", path.display()))
+            } else {
+                Ok(Some(token.to_string()))
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("无法读取 CLI 会话文件 {}：{error}", path.display())),
+    }
+}
+
+fn hydrate_cli_session_token(config_path: &Path, config: &mut Config) -> Result<(), String> {
+    if config.control.auth_token.trim().is_empty() {
+        if let Some(token) = read_cli_session_token(config_path)? {
+            config.control.auth_token = token;
+        }
+    }
+    Ok(())
+}
+
+fn cli_session_available(config_path: &Path, config: &Config) -> Result<bool, String> {
+    if !config.control.auth_token.trim().is_empty() {
+        return Ok(true);
+    }
+    Ok(read_cli_session_token(config_path)?.is_some())
+}
+
+fn clear_cli_session_token(config_path: &Path) -> Result<(), String> {
+    let path = cli_session_path(config_path);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("无法删除 CLI 会话文件 {}：{error}", path.display())),
+    }
 }
 
 async fn revoke_current_device_credential(config: &Config) -> Result<(), String> {

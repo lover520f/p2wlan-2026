@@ -2359,12 +2359,15 @@ name = "p2wlan-cli"
 version = "0.1.155"
 dependencies = [
  "clap",
+ "flate2",
+ "hex",
  "libc",
  "p2wlan-daemon",
  "reqwest",
  "rpassword",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 

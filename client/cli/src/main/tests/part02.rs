@@ -238,5 +238,9 @@ async fn login_saves_token_from_control_server() {
     assert_eq!(config.control.auth_token, "test-token");
     assert_eq!(config.control.server_url, format!("http://{address}"));
     assert!(config.diagnostics.enabled);
+    assert_eq!(
+        read_cli_session_token(&path).unwrap().as_deref(),
+        Some("test-token")
+    );
     let _ = fs::remove_dir_all(directory);
 }

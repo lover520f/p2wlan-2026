@@ -1,16 +1,23 @@
 async fn start(config_path: &Path) -> Result<(), String> {
+    start_with_state_dir(config_path, &state_dir()).await
+}
+
+async fn start_with_state_dir(config_path: &Path, instance_state_dir: &Path) -> Result<(), String> {
     let config = load_config(config_path)?;
     if config.control.auth_token.trim().is_empty() {
         return Err("尚未登录，请先运行 p2wlan login -u <邮箱>".to_string());
     }
-    if fetch_status(&status_url(&config)).await.is_ok() {
+    if fetch_status_at(&status_url(&config), instance_state_dir)
+        .await
+        .is_ok()
+    {
         println!("p2wlan 已经在运行。");
         return Ok(());
     }
 
     let args = InternalStartArgs {
         config: absolute_path(config_path)?,
-        state_dir: state_dir(),
+        state_dir: instance_state_dir.to_path_buf(),
         daemon: locate_daemon()?,
     };
     if is_root() {
@@ -47,7 +54,7 @@ async fn start_daemon_as_root(args: InternalStartArgs) -> Result<(), String> {
     }
     let config = load_config(&args.config)?;
     let url = status_url(&config);
-    if fetch_status(&url).await.is_ok() {
+    if fetch_status_at(&url, &args.state_dir).await.is_ok() {
         println!("p2wlan 已经在运行。");
         return Ok(());
     }
@@ -102,7 +109,8 @@ async fn start_daemon_as_root(args: InternalStartArgs) -> Result<(), String> {
                 "daemon 启动后立即退出（{exit}）。请运行 p2wlan logs 查看原因"
             ));
         }
-        if let Ok(snapshot) = fetch_status(&url).await {
+        if let Ok(snapshot) = fetch_status_at(&url, &args.state_dir).await {
+            handoff_diagnostics_token(&args.state_dir)?;
             println!(
                 "p2wlan 已启动：{}（PID {}）",
                 snapshot
@@ -119,39 +127,31 @@ async fn start_daemon_as_root(args: InternalStartArgs) -> Result<(), String> {
 }
 
 async fn stop(config_path: &Path) -> Result<(), String> {
+    stop_with_state_dir(config_path, &state_dir()).await
+}
+
+async fn stop_with_state_dir(
+    config_path: &Path,
+    instance_state_dir: &Path,
+) -> Result<(), String> {
     let config = load_config(config_path)?;
     let url = format!(
         "http://{}/shutdown",
         normalized_diagnostics_bind(&config.diagnostics.bind)
     );
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let response = async {
-        for attempt in 0..2 {
-            let token = read_diagnostics_auth_token()?;
-            let response = client
-                .post(&url)
-                .bearer_auth(token)
-                .send()
-                .await
-                .map_err(|error| error.to_string())?;
-            if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-                continue;
-            }
-            return Ok::<_, String>(response);
-        }
-        Err("diagnostics session changed; retry after restarting the daemon".to_string())
-    }
+    let response = diagnostics_request(
+        &url,
+        instance_state_dir,
+        reqwest::Method::POST,
+    )
     .await;
     match response {
-        Ok(response) if response.status().is_success() => {
+        Ok((status, _)) if status.is_success() => {
             println!("已发送停止请求。");
             Ok(())
         }
         _ => {
-            let pid_path = state_dir().join("p2wlan-daemon.pid");
+            let pid_path = instance_state_dir.join("p2wlan-daemon.pid");
             let Some(pid) = verified_recorded_daemon(&pid_path)? else {
                 println!("p2wlan 未运行。");
                 return Ok(());

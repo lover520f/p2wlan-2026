@@ -46,7 +46,7 @@ When establishing a connection, P2WLAN prefers **LAN Direct / public UDP P2P**. 
 | **Relay Fallback** | Automatically move to an encrypted relay when Direct is unavailable. |
 | **End-to-End Encryption** | Peer traffic is carried in encrypted sessions; relays forward ciphertext only. |
 | **Rooms** | Organize a fixed or temporary group of devices for game sessions, collaboration, or private services. |
-| **Cross-platform** | GUI clients cover Windows, macOS, Linux, and mobile preview targets; CLI / daemon builds support servers and headless systems. |
+| **Cross-platform** | GUI clients cover Windows, macOS, Linux, and Android; iOS remains experimental; CLI / daemon builds support servers and headless systems. |
 | **Self-hosted** | Run the Control Plane, SQLite database, and Relay on infrastructure you control. |
 
 ## Screenshots
@@ -106,7 +106,7 @@ Get the latest build from [GitHub Releases](https://github.com/yhan-sun/p2wlan/r
 | Windows x64 | `p2wlan-windows-x64-setup.exe` | Supported |
 | Linux x64 | Flutter `.tar.gz` / CLI `.tar.gz` | Supported |
 | Linux arm64 | CLI `.tar.gz` | Supported |
-| Android 7.0+ (API 24+) arm64 | `p2wlan-android-arm64-release.apk` | Preview |
+| Android 7.0+ (API 24+) arm64 | `p2wlan-android-arm64-release.apk` | Supported |
 | iOS 15+ arm64 | `p2wlan-ios-arm64-unsigned.ipa` | Experimental, requires signing |
 
 ### 2. Sign in
@@ -151,6 +151,15 @@ The repository also includes a Linux CLI installer:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yhan-sun/p2wlan/main/scripts/install-linux-cli.sh -o /tmp/p2wlan-install.sh
 sudo sh /tmp/p2wlan-install.sh
+```
+
+See [`docs/linux-cli.md`](docs/linux-cli.md) for room management, Direct/Relay path policies, route repair, support bundles, and systemd deployment. Common commands include:
+
+```bash
+p2wlan room list
+p2wlan room connect <room-code-or-id>
+p2wlan route verify
+p2wlan support-bundle --upload
 ```
 
 ## How It Works

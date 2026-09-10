@@ -1,0 +1,38 @@
+[Unit]
+Description=P2WLAN encrypted virtual network daemon
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/dev/net/tun
+
+[Service]
+Type=simple
+User=p2wlan
+Group=p2wlan
+ExecStart=/usr/local/bin/p2wlan-daemon \
+  --config /etc/p2wlan/p2wlan-config.json \
+  --managed \
+  --diagnostics-bind 127.0.0.1:39277 \
+  --log-file /var/log/p2wlan/p2wlan-daemon.log
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+LimitNOFILE=65536
+
+# Linux TUN and route management. Keep the service unprivileged apart from
+# the capabilities required by the virtual interface and route manager.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+DeviceAllow=/dev/net/tun rw
+NoNewPrivileges=yes
+
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=full
+# The daemon persists its device credential and runtime config in this file.
+ReadWritePaths=/etc/p2wlan
+LogsDirectory=p2wlan
+LogsDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

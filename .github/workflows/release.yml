@@ -619,8 +619,11 @@ jobs:
           cp target/${{ matrix.target }}/release/p2wlan-daemon "$pkg/p2pnet-daemon"
           cp scripts/install-linux-cli.sh "$pkg/install.sh"
           cp LICENSE "$pkg/"
+          mkdir -p "$pkg/systemd"
+          cp deploy/systemd/p2wlan-daemon.service "$pkg/systemd/"
+          cp docs/linux-cli.md "$pkg/"
           cat > "$pkg/README-LINUX-CLI.txt" <<'EOF'
-          p2wlan Linux CLI Preview
+          p2wlan Linux CLI
 
           Contents:
           - p2wlan: user-facing command-line client
@@ -628,6 +631,8 @@ jobs:
           - p2pnet-daemon: legacy name of p2wlan-daemon (same binary; kept for
             installers and update checks that predate the v0.1.67 rename)
           - install.sh: system-wide installer; also works as an online GitHub release installer
+          - linux-cli.md: Linux CLI, room, diagnostics, and systemd deployment guide
+          - systemd/p2wlan-daemon.service: hardened systemd unit template
           - LICENSE
 
           Install from this tarball:
@@ -641,7 +646,7 @@ jobs:
           1. curl -fsSL https://raw.githubusercontent.com/yhan-sun/p2wlan/main/scripts/install-linux-cli.sh -o /tmp/p2wlan-install.sh
           2. sudo sh /tmp/p2wlan-install.sh --version ${{ github.ref_name }}
 
-          Preview or install to a user directory:
+          Dry-run or install to a user directory:
           - sh /tmp/p2wlan-install.sh --version ${{ github.ref_name }} --dry-run
           - sh /tmp/p2wlan-install.sh --install-dir "$HOME/.local/bin"
 
@@ -659,6 +664,14 @@ jobs:
           - p2wlan config set device-name linux-server
           - p2wlan config set udp-bind 0.0.0.0:60207
           - p2wlan config set udp-advertise <public-ip>:60207
+          - p2wlan config set proxy-mode direct|environment
+          - p2wlan config set relay-policy auto|direct|prefer-relay|relay
+          - p2wlan config set prefer-direct on|off
+          - p2wlan config set path-policy auto|score|direct-sticky|relay-only
+          - p2wlan room list
+          - p2wlan room connect <room-code-or-id>
+          - p2wlan route verify / p2wlan route repair
+          - p2wlan support-bundle --upload
           - p2wlan doctor
           - p2wlan update
           - p2wlan logs -f
@@ -671,6 +684,7 @@ jobs:
           - Supplying `-p` is supported for automation, but interactive password input is safer.
           - Cloud direct UDP needs an open fixed UDP port in the provider security group and OS firewall.
           - `p2wlan doctor` shows peer UDP candidate previews and warns when peers only advertise private endpoints.
+          - See `docs/linux-cli.md` in the source tree for systemd and complete room-management instructions.
           - For self-hosting, run the Go control and relay services separately.
           EOF
           chmod +x "$pkg/p2wlan" "$pkg/p2wlan-daemon" "$pkg/install.sh"

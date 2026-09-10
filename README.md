@@ -46,7 +46,7 @@ P2WLAN 是一个开源、P2P 优先、可自托管的虚拟局域网工具。它
 | **Relay Fallback** | Direct 不可用时自动切换到加密 Relay，尽量保证连接可用。 |
 | **End-to-End Encryption** | 设备间数据通过加密会话传输，Relay 只负责转发密文。 |
 | **Rooms** | 用房间组织临时或固定的一组设备，适合朋友联机、协作和私有服务互通。 |
-| **Cross-platform** | GUI 覆盖 Windows、macOS、Linux 与移动端预览；CLI / daemon 适合服务器和无桌面环境。 |
+| **Cross-platform** | GUI 覆盖 Windows、macOS、Linux 与 Android；iOS 仍为实验性预览；CLI / daemon 适合服务器和无桌面环境。 |
 | **Self-hosted** | Control Plane、SQLite 与 Relay 可以部署到自己的 Linux 服务器。 |
 
 ## 界面预览
@@ -106,7 +106,7 @@ P2WLAN 的目标不是替你定义业务，而是提供一张跨地域的虚拟�
 | Windows x64 | `p2wlan-windows-x64-setup.exe` | 支持 |
 | Linux x64 | Flutter `.tar.gz` / CLI `.tar.gz` | 支持 |
 | Linux arm64 | CLI `.tar.gz` | 支持 |
-| Android 7.0+ (API 24+) arm64 | `p2wlan-android-arm64-release.apk` | Preview |
+| Android 7.0+ (API 24+) arm64 | `p2wlan-android-arm64-release.apk` | 支持 |
 | iOS 15+ arm64 | `p2wlan-ios-arm64-unsigned.ipa` | 实验性，需签名 |
 
 ### 2. 登录
@@ -151,6 +151,15 @@ Linux CLI 也提供安装脚本：
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yhan-sun/p2wlan/main/scripts/install-linux-cli.sh -o /tmp/p2wlan-install.sh
 sudo sh /tmp/p2wlan-install.sh
+```
+
+Linux CLI 的房间管理、Direct/Relay 路径策略、路由修复、支持包和 systemd 部署说明见 [`docs/linux-cli.md`](docs/linux-cli.md)。常用命令还包括：
+
+```bash
+p2wlan room list
+p2wlan room connect <房间号或房间 ID>
+p2wlan route verify
+p2wlan support-bundle --upload
 ```
 
 ## 工作方式

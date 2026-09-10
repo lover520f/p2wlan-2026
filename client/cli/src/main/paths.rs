@@ -195,3 +195,42 @@ fn make_world_readable(file: &File) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `p2wlan up` launches the daemon through sudo, but the interactive CLI
+/// still needs to call its loopback diagnostics endpoint afterwards. Keep the
+/// token mode 0600 and hand ownership back to the original sudo caller rather
+/// than making the token readable by every local user.
+fn handoff_diagnostics_token(instance_state_dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        if !is_root() {
+            return Ok(());
+        }
+        let Some(uid) = env::var("SUDO_UID")
+            .ok()
+            .and_then(|value| value.parse::<libc::uid_t>().ok())
+        else {
+            return Ok(());
+        };
+        let Some(gid) = env::var("SUDO_GID")
+            .ok()
+            .and_then(|value| value.parse::<libc::gid_t>().ok())
+        else {
+            return Ok(());
+        };
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let path = instance_state_dir.join("p2wlan-daemon.diag-auth");
+        let path = CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| "diagnostics token 路径包含无效字符".to_string())?;
+        if unsafe { libc::chown(path.as_ptr(), uid, gid) } != 0 {
+            return Err(format!(
+                "无法把 diagnostics token 交还给 sudo 调用者：{}",
+                io::Error::last_os_error()
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = instance_state_dir;
+    Ok(())
+}

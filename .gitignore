@@ -51,7 +51,8 @@ coverage/
 P2PNet-Design.md
 PRODUCT.md
 research/nat-traversal-paper/
-docs/
+docs/*
+!docs/linux-cli.md
 
 # Staging deployment templates (kept on disk, never published)
 deploy/staging/*.env.example

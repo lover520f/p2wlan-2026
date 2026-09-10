@@ -186,6 +186,48 @@ func TestUploadSupportLogsV2WithRoomInstances(t *testing.T) {
 	}
 }
 
+func TestUploadSupportLogsV2WithInstancesOnly(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("LOG_UPLOAD_DIR", directory)
+	server := NewServer(nil, nil, nil)
+	roomHex := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	bundle := supportLogBundle{
+		SchemaVersion: supportLogSchemaVersion2,
+		UploadedAt:    "2026-09-09T08:00:00Z",
+		DeviceName:    "linux-cli",
+		Platform:      "linux-cli",
+		Manifest: &supportLogManifest{
+			TotalInstances:        2,
+			HasRoomLogs:           true,
+			RetainedRoomInstances: 1,
+		},
+		Instances: []supportLogInstance{
+			{InstanceType: "main", NetworkID: "default", Log: "main\n"},
+			{InstanceType: "room", NetworkID: "room-1", ProfileID: roomHex, Log: "room\n"},
+		},
+	}
+	encoded, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body bytes.Buffer
+	zw := gzip.NewWriter(&body)
+	if _, err := zw.Write(encoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/support/logs", &body)
+	req.Header.Set("Content-Encoding", "gzip")
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserClaimsKey, &auth.Claims{UserID: "cli-user"}))
+	recorder := httptest.NewRecorder()
+	server.UploadSupportLogs(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("instances-only bundle: HTTP %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestUploadSupportLogsRejectsInvalidFileNameOrTraversal(t *testing.T) {
 	server := NewServer(nil, nil, nil)
 	tests := []struct {

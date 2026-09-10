@@ -8,7 +8,7 @@ use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 #[cfg(unix)]
 use std::io;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -22,7 +22,7 @@ const DEFAULT_NETWORK: &str = "default";
 const DEFAULT_DIAGNOSTICS_BIND: &str = "127.0.0.1:39277";
 const DEFAULT_UPDATE_REPO: &str = "yhan-sun/p2wlan";
 const DEFAULT_INSTALL_DIR: &str = "/usr/local/bin";
-const SUPPORTED_CONFIG_KEYS: &str = "control、network、device-name、interface、mtu、udp-bind、udp-advertise、stun、port-mapping/upnp、birthday-probing、socket-pool、diagnostics、relay、relay-policy、path-policy、relay-startup-timeout";
+const SUPPORTED_CONFIG_KEYS: &str = "control、network、device-name、interface、mtu、udp-bind、udp-advertise、stun、port-mapping/upnp、birthday-probing、socket-pool、diagnostics、relay、relay-regions、relay-selection-timeout、relay-policy、prefer-direct、path-policy、relay-startup-timeout、proxy-mode";
 
 #[derive(Parser, Debug)]
 #[command(name = "p2wlan", version, about = "p2wlan Linux command-line client")]
@@ -69,6 +69,18 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Verify or repair the daemon's live overlay route
+    Route {
+        #[command(subcommand)]
+        command: RouteCommand,
+    },
+    /// Manage control-plane rooms and independent local room daemons
+    Room {
+        #[command(subcommand)]
+        command: RoomCommand,
+    },
+    /// Collect a redacted, server-compatible diagnostic support bundle
+    SupportBundle(SupportBundleArgs),
     /// Diagnose local config, daemon status, direct UDP, and relay fallback
     Doctor,
     /// Download and install the latest Linux CLI release
@@ -99,7 +111,7 @@ enum ConfigCommand {
     Path,
     /// Set one supported configuration value
     Set {
-        /// control, network, device-name, interface, mtu, udp-bind, udp-advertise, stun, port-mapping/upnp, birthday-probing, socket-pool, diagnostics, relay, relay-policy, path-policy, or relay-startup-timeout
+        /// control, network, device-name, interface, mtu, udp-bind, udp-advertise, stun, port-mapping/upnp, birthday-probing, socket-pool, diagnostics, relay, relay-regions, relay-selection-timeout, relay-policy, prefer-direct, path-policy, relay-startup-timeout, or proxy-mode
         key: String,
         value: String,
     },
@@ -173,6 +185,9 @@ async fn run(cli: Cli) -> Result<(), String> {
         Commands::Status { json } => status(&config_path, json).await,
         Commands::Logs { lines, follow } => logs(lines, follow),
         Commands::Config { command } => config_command(&config_path, command),
+        Commands::Route { command } => route_command(&config_path, command).await,
+        Commands::Room { command } => room_command(&config_path, command).await,
+        Commands::SupportBundle(args) => support_bundle(&config_path, args).await,
         Commands::Doctor => doctor(&config_path).await,
         Commands::Update(args) => update(&config_path, args).await,
         Commands::InternalStart(args) => start_daemon_as_root(args).await,
@@ -185,6 +200,9 @@ include!("main/diagnostics.rs");
 include!("main/update.rs");
 include!("main/config.rs");
 include!("main/paths.rs");
+include!("main/routes.rs");
+include!("main/rooms.rs");
+include!("main/support.rs");
 
 #[cfg(test)]
 #[path = "main/tests.rs"]

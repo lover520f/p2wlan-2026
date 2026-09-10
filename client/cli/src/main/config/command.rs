@@ -10,14 +10,11 @@ fn config_command(path: &Path, command: ConfigCommand) -> Result<(), String> {
             println!("control = {}", config.control.server_url);
             println!(
                 "logged-in = {}",
-                if config.control.auth_token.is_empty() {
-                    "no"
-                } else {
-                    "yes"
-                }
+                if cli_session_available(path, &config)? { "yes" } else { "no" }
             );
             println!("network = {}", config.network.network_id);
             println!("device-name = {}", config.node.device_name);
+            println!("proxy-mode = {}", config.control.proxy_mode.as_label());
             println!("interface = {}", config.network.interface);
             println!("mtu = {}", config.network.mtu);
             println!("udp-bind = {}", config.network.udp_bind);
@@ -70,6 +67,18 @@ fn config_command(path: &Path, command: ConfigCommand) -> Result<(), String> {
                 }
             );
             println!("relay = {}", config.relay.servers.join(","));
+            println!(
+                "relay-regions = {}",
+                if config.relay.preferred_regions.is_empty() {
+                    "(latency)".to_string()
+                } else {
+                    config.relay.preferred_regions.join(",")
+                }
+            );
+            println!(
+                "relay-selection-timeout = {}ms",
+                config.relay.selection_timeout_ms
+            );
             println!(
                 "relay-policy = {}",
                 if config.relay.prefer_direct {
