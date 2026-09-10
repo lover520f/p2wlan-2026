@@ -349,14 +349,14 @@ jobs:
           # asset set before downloading; otherwise this audit races a healthy
           # release and reports a false failure.
           required_patterns=(
-            'android-arm64.*\\.apk$'
-            'ios-arm64.*\\.ipa$'
-            'p2wlan-(flutter-)?linux-x64(-release)?\\.tar\\.gz$'
-            'macos-arm64.*\\.dmg$'
-            'macos-x64.*\\.dmg$'
-            'windows-x64.*\\.(exe|zip)$'
-            'linux-arm64-cli.*\\.tar\\.gz$'
-            'linux-x64-cli.*\\.tar\\.gz$'
+            'android-arm64.*\.apk$'
+            'ios-arm64.*\.ipa$'
+            'p2wlan-(flutter-)?linux-x64(-release)?\.tar\.gz$'
+            'macos-arm64.*\.dmg$'
+            'macos-x64.*\.dmg$'
+            'windows-x64.*\.(exe|zip)$'
+            'linux-arm64-cli.*\.tar\.gz$'
+            'linux-x64-cli.*\.tar\.gz$'
           )
           # macOS cross-builds can take more than twenty minutes while the
           # release workflow is still uploading the final architecture asset.
