@@ -266,6 +266,30 @@ function Start-ProductionDaemon {
         [Parameter(Mandatory = $true)][string]$LogPath,
         [Parameter(Mandatory = $true)][string]$DiagnosticsBind
     )
+    # The CLI stop path reads diagnostics.bind from the persisted config. The
+    # acceptance harness intentionally rotates the diagnostics port every
+    # cycle, so initialize the temporary profile with the exact same override
+    # before launching the daemon. Without this, `p2wlan down` probes the
+    # default port, silently falls back to the Windows no-PID path, and leaves
+    # the production daemon running.
+    $initOutput = @(& $DaemonPath `
+        --init `
+        --config $ConfigPath `
+        --control 'http://127.0.0.1:1' `
+        --network 'windows-lifecycle' `
+        --diagnostics-bind $DiagnosticsBind `
+        --manual `
+        --interface 'p2wlan-lifecycle' `
+        --address '10.20.0.1' `
+        --udp-bind '127.0.0.1:0' `
+        --stun 'none' `
+        --socket-pool 'off' `
+        2>&1 | Out-String)
+    $initExitCode = $LASTEXITCODE
+    if ($initExitCode -ne 0) {
+        throw "failed to initialize lifecycle config (exit code $initExitCode): $($initOutput -join '')"
+    }
+
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $DaemonPath
     $startInfo.WorkingDirectory = Split-Path -Parent $DaemonPath
