@@ -1,0 +1,22 @@
+diff --git a/apps/flutter_client/test/rooms_page_test.dart b/apps/flutter_client/test/rooms_page_test.dart
+index f51e4d1..b638190 100644
+--- a/apps/flutter_client/test/rooms_page_test.dart
++++ b/apps/flutter_client/test/rooms_page_test.dart
+@@ -462,6 +462,8 @@
+     'roster-only device details open without fabricated live measurements',
+     (tester) async {
+       await pump(tester, role: 'member');
++      await tester.ensureVisible(find.byKey(const ValueKey('room-device-device-1')));
++      await tester.pumpAndSettle();
+       await tester.tap(find.byKey(const ValueKey('room-device-device-1')));
+       await tester.pumpAndSettle();
+       expect(find.byType(Dialog), findsOneWidget);
+@@ -546,7 +548,7 @@
+   ) async {
+     await pump(tester, snapshot: _snapshot(stale: true));
+     expect(find.text('18 ms'), findsNothing);
+-    expect(find.text('状态待更新'), findsOneWidget);
++    expect(find.text('状态待更新'), findsNWidgets(2));
+     await tester.pumpWidget(const SizedBox.shrink());
+   });
+ 
