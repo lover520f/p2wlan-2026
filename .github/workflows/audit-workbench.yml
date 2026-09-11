@@ -30,9 +30,11 @@ jobs:
           git merge-base --is-ancestor d056fc282d482afe040f6152fc24e6d967fd032f HEAD
           python3 - <<'PY'
           import json, os, pathlib, re, subprocess
-          patches = sorted(pathlib.Path('.audit-workbench').glob('patch-*.diff'))
+          root = pathlib.Path('.audit-workbench')
+          patches = sorted(root.glob('patch-*.diff'))
           if len(patches) != 10:
               raise SystemExit('expected all ten source patch parts')
+          patches.extend(sorted(root.glob('amend-*.diff')))
           expected = {}
           for patch in patches:
               text = re.sub(r'^ +diff --git ', 'diff --git ', patch.read_text(), flags=re.M)
@@ -57,18 +59,6 @@ jobs:
           PY
           mv .audit-workbench "$RUNNER_TEMP/audit-workbench-input"
           mv .github/workflows/audit-workbench.yml "$RUNNER_TEMP/audit-workbench.yml"
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
-        with:
-          go-version-file: server/go.mod
-          cache-dependency-path: server/go.sum
-      - name: Go formatting, vet and race regressions
-        working-directory: server
-        shell: bash
-        run: |
-          set -euo pipefail
-          gofmt -w api/*.go database/*.go relay/*.go
-          go vet ./... 2>&1 | tee "$RUNNER_TEMP/audit-go-vet.log"
-          go test -race ./... -count=1 2>&1 | tee "$RUNNER_TEMP/audit-go-race.log"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           channel: stable
@@ -91,8 +81,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fmt --all
+          rustfmt --edition 2021 client/cli/src/main/rooms.rs
+          cargo fmt --all -- --check
           cargo test -p p2wlan-cli room_tests -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/audit-cli-tests.log"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Go formatting, vet and race regressions
+        working-directory: server
+        shell: bash
+        run: |
+          set -euo pipefail
+          gofmt -w api/*.go database/*.go relay/*.go
+          go vet ./... 2>&1 | tee "$RUNNER_TEMP/audit-go-vet.log"
+          go test -race ./... -count=1 2>&1 | tee "$RUNNER_TEMP/audit-go-race.log"
       - name: Existing repository security policy
         shell: bash
         run: |
