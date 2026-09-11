@@ -14,10 +14,13 @@ from typing import Iterable
 from report_common import make_report
 
 VALID_LEVELS = {"read", "write", "none"}
-WRITE_ALLOWLIST = {"release.yml": {"contents"}}
+WRITE_ALLOWLIST = {"release.yml": {"contents"}, "build-server.yml": {"contents"}}
 WRITE_ALLOWLIST_REASONS = {
     ".github/workflows/release.yml": {
         "contents": "create and populate the GitHub Release for an immutable v* tag"
+    },
+    ".github/workflows/build-server.yml": {
+        "contents": "create and populate the GitHub Release for an immutable server-v* tag"
     }
 }
 PRODUCTION_SECRET_NAMES = {

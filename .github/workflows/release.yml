@@ -689,7 +689,10 @@ jobs:
           EOF
           chmod +x "$pkg/p2wlan" "$pkg/p2wlan-daemon" "$pkg/install.sh"
           tar -C dist-release -czf "dist-release/$name.tar.gz" "$name"
-          sha256sum "dist-release/$name.tar.gz" > "dist-release/$name.tar.gz.sha256"
+          (
+            cd dist-release
+            sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          )
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
