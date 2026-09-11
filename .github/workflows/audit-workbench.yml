@@ -35,7 +35,9 @@ jobs:
               raise SystemExit('expected all ten source patch parts')
           expected = {}
           for patch in patches:
-              text = patch.read_text()
+              text = re.sub(r'^ +diff --git ', 'diff --git ', patch.read_text(), flags=re.M)
+              normalized = pathlib.Path(os.environ['RUNNER_TEMP'], patch.name)
+              normalized.write_text(text)
               for block in re.split(r'(?=^diff --git )', text, flags=re.M):
                   if not block.strip():
                       continue
@@ -44,8 +46,8 @@ jobs:
                       raise SystemExit('unexpected patch target: ' + path)
                   digest = re.search(r'^index [0-9a-f]+\.\.([0-9a-f]+)', block, flags=re.M).group(1)
                   expected[path] = digest
-              subprocess.run(['git', 'apply', '--check', str(patch)], check=True)
-              subprocess.run(['git', 'apply', str(patch)], check=True)
+              subprocess.run(['git', 'apply', '--check', str(normalized)], check=True)
+              subprocess.run(['git', 'apply', str(normalized)], check=True)
           for path, digest in expected.items():
               actual = subprocess.check_output(['git', 'hash-object', path], text=True).strip()
               if not actual.startswith(digest):
