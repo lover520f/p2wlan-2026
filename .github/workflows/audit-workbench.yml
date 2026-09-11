@@ -1,0 +1,44 @@
+name: Audit workbench
+
+on:
+  push:
+    branches: [fix/relay-auth-rooms-ux-audit]
+    paths: [.github/workflows/audit-workbench.yml, .audit-workbench/**]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-workbench-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    if: github.repository == 'yhan-sun/p2wlan' && github.ref == 'refs/heads/fix/relay-auth-rooms-ux-audit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Archive exact tracked source
+        run: git archive --format=tar.gz HEAD -o "${RUNNER_TEMP}/p2wlan-audit-source.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p2wlan-audit-source-${{ github.sha }}
+          path: ${{ runner.temp }}/p2wlan-audit-source.tar.gz
+          retention-days: 1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Archive pinned development dependencies
+        working-directory: server
+        run: |
+          go mod vendor
+          tar -czf "${RUNNER_TEMP}/p2wlan-audit-go-vendor.tar.gz" vendor
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p2wlan-audit-go-vendor-${{ github.sha }}
+          path: ${{ runner.temp }}/p2wlan-audit-go-vendor.tar.gz
+          retention-days: 1
