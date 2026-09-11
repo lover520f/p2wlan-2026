@@ -1,0 +1,24 @@
+diff --git a/apps/flutter_client/lib/core/rooms/parallel_rooms.dart b/apps/flutter_client/lib/core/rooms/parallel_rooms.dart
+index f3f41e5..bcfcc76 100644
+--- a/apps/flutter_client/lib/core/rooms/parallel_rooms.dart
++++ b/apps/flutter_client/lib/core/rooms/parallel_rooms.dart
+@@ -19,7 +19,9 @@
+     profileId = roomProfileId(selected);
+     final port = diagnosticsPort ??
+         (40000 + int.parse(profileId.substring(0, 8), radix: 16) % 20000);
+-    if (port < 40000 || port >= 60000) throw ArgumentError.value(port, 'diagnosticsPort');
++    if (port < 40000 || port >= 60000) {
++      throw ArgumentError.value(port, 'diagnosticsPort');
++    }
+     settings = selected.copyWith(
+       diagnosticsUrl: 'http://127.0.0.1:$port/status',
+       tunInterface: 'p2r${profileId.substring(0, 12)}',
+@@ -647,7 +649,7 @@
+       entry.snapshot = snapshot;
+       entry.phase = RoomConnectionPhase.running;
+       final runtime = entry.runtime;
+-      entry.message = runtime is RoomControlStatus ? runtime.controlWarning : null;
++      entry.message = runtime is RoomControlStatus ? (runtime as RoomControlStatus).controlWarning : null;
+       _rememberRoom(
+         entry.plan,
+         snapshot: snapshot,
