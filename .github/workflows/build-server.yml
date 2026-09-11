@@ -1,22 +1,50 @@
-name: Build Server
+name: Build and stage server
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_staging:
+        description: Upload the verified server bundle to the isolated staging host
+        required: true
+        default: false
+        type: boolean
+      ref:
+        description: Source ref to build (tag or commit; defaults to the checked-out ref)
+        required: false
+        type: string
+  push:
+    tags:
+      - 'server-v*'
 
 permissions:
   contents: read
 
+env:
+  GO_VERSION_FILE: server/go.mod
+
 jobs:
-  build-server:
-    name: Build Go control and relay (linux amd64)
+  build:
+    name: Build server (${{ matrix.arch }})
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+          - arch: arm64
+            goarch: arm64
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
-          go-version-file: server/go.mod
+          go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
           cache-dependency-path: server/go.sum
 
@@ -24,20 +52,27 @@ jobs:
         working-directory: server
         run: go test ./...
 
-      - name: Build server binaries
+      - name: Build and checksum server bundle
         working-directory: server
         env:
-          CGO_ENABLED: "1"
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/server-v') && github.ref_name || format('server-dev-{0}', github.sha) }}
         run: |
           set -euo pipefail
           rm -rf dist
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" -o dist/p2wlan-control .
-          go build -trimpath -ldflags="-s -w" -o dist/p2wlan-relay ./relay
+          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -trimpath \
+            -ldflags="-s -w -X main.buildVersion=$VERSION -X main.buildCommit=$GITHUB_SHA" \
+            -o dist/p2wlan-control .
+          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -trimpath \
+            -ldflags="-s -w -X main.buildVersion=$VERSION -X main.buildCommit=$GITHUB_SHA" \
+            -o dist/p2wlan-relay ./relay
           chmod 0755 dist/p2wlan-control dist/p2wlan-relay
           {
-            echo "commit=${GITHUB_SHA}"
-            echo "go=$(go version)"
+            echo "version=$VERSION"
+            echo "commit=$GITHUB_SHA"
+            echo "arch=$GOARCH"
+            go version
             go version -m dist/p2wlan-control
             go version -m dist/p2wlan-relay
           } > dist/BUILD-METADATA.txt
@@ -45,12 +80,123 @@ jobs:
             cd dist
             sha256sum p2wlan-control p2wlan-relay > SHA256SUMS
           )
-          tar -C dist -czf p2wlan-server-linux-amd64.tar.gz \
-            p2wlan-control p2wlan-relay BUILD-METADATA.txt SHA256SUMS
+          install -m 0755 ../scripts/p2wlan-server ../scripts/install-server.sh dist/
+          tar -C dist -czf "p2wlan-server-linux-${{ matrix.arch }}.tar.gz" \
+            p2wlan-control p2wlan-relay p2wlan-server install-server.sh BUILD-METADATA.txt SHA256SUMS
+          sha256sum "p2wlan-server-linux-${{ matrix.arch }}.tar.gz" > \
+            "p2wlan-server-linux-${{ matrix.arch }}.tar.gz.sha256"
 
-      - name: Upload server artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - name: Upload server bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p2wlan-server-linux-amd64-${{ github.sha }}
-          path: server/p2wlan-server-linux-amd64.tar.gz
-          retention-days: 7
+          name: p2wlan-server-linux-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            server/p2wlan-server-linux-${{ matrix.arch }}.tar.gz
+            server/p2wlan-server-linux-${{ matrix.arch }}.tar.gz.sha256
+          retention-days: 14
+
+  stage:
+    name: Deploy verified bundle to staging
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_staging }}
+    runs-on: ubuntu-22.04
+    environment: staging
+    concurrency:
+      group: p2wlan-server-staging
+      cancel-in-progress: false
+    steps:
+      - name: Check out staging smoke script
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: scripts/staging/run-server-smoke.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Download built bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: p2wlan-server-linux-*-*
+          path: bundles
+          merge-multiple: true
+
+      - name: Check staging SSH inputs
+        env:
+          STAGING_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          STAGING_HOST: ${{ vars.STAGING_HOST }}
+          STAGING_USER: ${{ vars.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$STAGING_SSH_PRIVATE_KEY"
+          test -n "$STAGING_HOST"
+          test -n "$STAGING_USER"
+          case "$STAGING_HOST" in
+            47.109.40.237) ;;
+            *) echo "staging environment must explicitly target 47.109.40.237" >&2; exit 1 ;;
+          esac
+
+      - name: Install SSH key and fixed host key
+        env:
+          STAGING_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$STAGING_SSH_PRIVATE_KEY" > "$HOME/.ssh/p2wlan-staging"
+          chmod 600 "$HOME/.ssh/p2wlan-staging"
+          test -n "$STAGING_KNOWN_HOSTS"
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Upload and verify staging bundle
+        env:
+          STAGING_HOST: ${{ vars.STAGING_HOST }}
+          STAGING_USER: ${{ vars.STAGING_USER }}
+          STAGING_PORT: ${{ vars.STAGING_PORT || '22' }}
+        run: |
+          set -euo pipefail
+          bundle_dir="/tmp/p2wlan-staging-${GITHUB_RUN_ID}"
+          ssh_cmd=(ssh -i "$HOME/.ssh/p2wlan-staging" -p "$STAGING_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes "$STAGING_USER@$STAGING_HOST")
+          "${ssh_cmd[@]}" "umask 077; mkdir -p '$bundle_dir'"
+          scp -i "$HOME/.ssh/p2wlan-staging" -P "$STAGING_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            bundles/* scripts/staging/run-server-smoke.sh "$STAGING_USER@$STAGING_HOST:$bundle_dir/"
+          "${ssh_cmd[@]}" "set -eu; cd '$bundle_dir'; chmod 0755 run-server-smoke.sh; for checksum in *.tar.gz.sha256; do sha256sum -c \"\$checksum\"; done; ./run-server-smoke.sh '$bundle_dir' '$GITHUB_RUN_ID'"
+
+      - name: Remove staging upload
+        if: ${{ always() }}
+        env:
+          STAGING_HOST: ${{ vars.STAGING_HOST }}
+          STAGING_USER: ${{ vars.STAGING_USER }}
+          STAGING_PORT: ${{ vars.STAGING_PORT || '22' }}
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/p2wlan-staging" -p "$STAGING_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$STAGING_USER@$STAGING_HOST" "rm -rf '/tmp/p2wlan-staging-${GITHUB_RUN_ID}'"
+
+  release:
+    name: Publish server release
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/server-v') }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download release bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: p2wlan-server-linux-*-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify release assets
+        working-directory: release-assets
+        run: |
+          set -euo pipefail
+          for checksum in *.tar.gz.sha256; do sha256sum -c "$checksum"; done
+          test "$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 2
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --latest=false

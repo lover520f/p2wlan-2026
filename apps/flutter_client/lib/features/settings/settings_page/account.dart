@@ -32,7 +32,19 @@ class _AccountSection extends StatelessWidget {
                 server: state.widget.settingsStore.settings.controlServer,
                 token: state.widget.settingsStore.settings.authToken,
                 email: state.widget.settingsStore.settings.accountEmail,
+                username: state.widget.settingsStore.settings.accountUsername,
                 onProfileLoaded: state._rememberAccountProfile,
+              )
+            else if (state.widget.settingsStore.settings.accountEmail
+                    .trim()
+                    .isNotEmpty ||
+                state.widget.settingsStore.settings.accountUsername
+                    .trim()
+                    .isNotEmpty)
+              _CachedAccountIdentity(
+                email: state.widget.settingsStore.settings.accountEmail,
+                username: state.widget.settingsStore.settings.accountUsername,
+                strings: strings,
               ),
             _PreferenceRow(
               label: strings.credentialSectionTitle,
@@ -106,6 +118,64 @@ class _AccountSection extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class _CachedAccountIdentity extends StatelessWidget {
+  const _CachedAccountIdentity({
+    required this.email,
+    required this.username,
+    required this.strings,
+  });
+
+  final String email;
+  final String username;
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest.withValues(
+            alpha: .45,
+          ),
+          borderRadius: BorderRadius.circular(AppTokens.radiusMd),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                username.trim().isEmpty
+                    ? strings.settingsUsernameNotSet
+                    : username.trim(),
+                style: theme.textTheme.titleMedium,
+              ),
+              if (email.trim().isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  email.trim(),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 8),
+              Text(
+                strings.settingsAccountCached,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

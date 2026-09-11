@@ -1,11 +1,17 @@
 async fn start(config_path: &Path) -> Result<(), String> {
-    start_with_state_dir(config_path, &state_dir()).await
+    start_with_state_dir(config_path, &state_dir_for_config(config_path)).await
 }
 
 async fn start_with_state_dir(config_path: &Path, instance_state_dir: &Path) -> Result<(), String> {
     let config = load_config(config_path)?;
-    if config.control.auth_token.trim().is_empty() {
-        return Err("尚未登录，请先运行 p2wlan login -u <邮箱>".to_string());
+    if config.control.server_url.trim().is_empty() {
+        return Err("尚未配置控制服务器，请先运行 p2wlan config set control https://你的服务器".to_string());
+    }
+    if config.control.auth_token.trim().is_empty()
+        && config.control.device_credential.trim().is_empty()
+        && !config.network.manual
+    {
+        return Err("尚未登录，请先运行 p2wlan login -u <邮箱或用户名>".to_string());
     }
     if fetch_status_at(&status_url(&config), instance_state_dir)
         .await
@@ -127,7 +133,7 @@ async fn start_daemon_as_root(args: InternalStartArgs) -> Result<(), String> {
 }
 
 async fn stop(config_path: &Path) -> Result<(), String> {
-    stop_with_state_dir(config_path, &state_dir()).await
+    stop_with_state_dir(config_path, &state_dir_for_config(config_path)).await
 }
 
 async fn stop_with_state_dir(

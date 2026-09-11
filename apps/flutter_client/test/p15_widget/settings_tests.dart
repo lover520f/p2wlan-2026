@@ -533,6 +533,42 @@ void _registerSettingsTests() {
     expect(find.text('已安全保存'), findsNothing);
   });
 
+  testWidgets('cached account identity remains visible without a token', (
+    tester,
+  ) async {
+    final stores = (await tester.runAsync(() async {
+      final s = await _makeStores(api: _FakeDiagnosticsApi(health: false));
+      await s.settingsStore.updateSettings(
+        s.settingsStore.settings.copyWith(
+          accountEmail: 'cached@example.com',
+          accountUsername: 'cached-user',
+        ),
+      );
+      return s;
+    }))!;
+    addTearDown(stores.dispose);
+
+    await tester.pumpWidget(
+      _TestApp(
+        child: SettingsPage(
+          settingsStore: stores.settingsStore,
+          statusStore: stores.statusStore,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _openCategory(tester, 'Account & Connection');
+
+    expect(find.text('cached-user'), findsOneWidget);
+    expect(find.text('cached@example.com'), findsOneWidget);
+    expect(
+      find.text(
+        'Showing the last account loaded successfully; it refreshes when connected.',
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('Pending restart survives unrelated saves until applied', (
     tester,
   ) async {

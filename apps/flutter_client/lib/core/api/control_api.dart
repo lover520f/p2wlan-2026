@@ -82,6 +82,9 @@ class ControlApi {
       method: 'POST',
       uri: endpoint,
       payload: {
+        'identifier': normalizedIdentifier.contains('@')
+            ? normalizedIdentifier.toLowerCase()
+            : normalizedIdentifier,
         'email': normalizedIdentifier.contains('@')
             ? normalizedIdentifier.toLowerCase()
             : normalizedIdentifier,
@@ -593,7 +596,11 @@ List<String> _normalizeOmittedRoomProfiles(Iterable<String> profileIds) {
 
 String _normalizeAuthControlServer(String value) {
   try {
-    return normalizeControlServer(value);
+    final normalized = normalizeControlServer(value);
+    if (normalized.isEmpty) {
+      throw const FormatException('控制服务器地址不能为空');
+    }
+    return normalized;
   } on FormatException catch (error) {
     throw ControlApiException(error.message);
   }

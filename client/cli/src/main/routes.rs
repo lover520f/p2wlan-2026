@@ -16,7 +16,7 @@ enum RouteCommand {
 
 async fn route_command(config_path: &Path, command: RouteCommand) -> Result<(), String> {
     let config = load_config(config_path)?;
-    let state = state_dir();
+    let state = state_dir_for_config(config_path);
     match command {
         RouteCommand::Verify { json } => {
             let url = diagnostics_endpoint(&config, "/routes/verify");

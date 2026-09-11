@@ -350,6 +350,11 @@ pub struct ControlConfig {
     /// Whether the device credential has been issued.
     #[serde(default)]
     pub credential_issued: bool,
+    /// Server-issued registration fence used for device-token control calls.
+    /// Persisting it lets CLI logout revoke a credential without weakening the
+    /// server-side lifecycle check.
+    #[serde(default)]
+    pub registration_seq: Option<u64>,
     /// Reconnect interval in seconds.
     #[serde(default = "default_reconnect_interval")]
     pub reconnect_interval_secs: u64,
@@ -372,6 +377,7 @@ impl std::fmt::Debug for ControlConfig {
                 &redacted_presence(&self.device_credential),
             )
             .field("credential_issued", &self.credential_issued)
+            .field("registration_seq", &self.registration_seq)
             .field("reconnect_interval_secs", &self.reconnect_interval_secs)
             .field("heartbeat_interval_secs", &self.heartbeat_interval_secs)
             .field("proxy_mode", &self.proxy_mode)

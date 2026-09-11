@@ -56,6 +56,14 @@ enum RoomCommand {
         /// Room ID or eight-digit room code
         room: String,
     },
+    /// Delete a room permanently (owner only). Requires --yes in scripts.
+    Delete {
+        /// Room ID or eight-digit room code
+        room: String,
+        /// Confirm the destructive deletion without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Rename a room (owner only)
     Rename {
         room: String,
@@ -154,8 +162,9 @@ struct RoomInfo {
 
 async fn room_command(config_path: &Path, command: RoomCommand) -> Result<(), String> {
     let mut config = load_config(config_path)?;
-    hydrate_cli_session_token(config_path, &mut config)?;
-    require_control_auth(&config)?;
+    if !matches!(&command, RoomCommand::Disconnect { .. }) {
+        hydrate_cli_session_token(config_path, &mut config)?;
+    }
 
     match command {
         RoomCommand::DeviceAccess {
@@ -306,6 +315,12 @@ async fn room_command(config_path: &Path, command: RoomCommand) -> Result<(), St
         RoomCommand::Connect { room } => connect_room(config_path, &config, &room).await,
         RoomCommand::Disconnect { room } => disconnect_room(config_path, &config, &room).await,
         RoomCommand::Leave { room } => leave_room(config_path, &config, &room).await,
+        RoomCommand::Delete { room, yes } => {
+            if !yes {
+                return Err("删除房间是不可逆操作，请再次确认并添加 --yes".to_string());
+            }
+            delete_room(config_path, &config, &room).await
+        }
         RoomCommand::Rename { room, name } => {
             let info = resolve_room(&config, &room).await?;
             if name.trim().is_empty() {
@@ -758,7 +773,7 @@ async fn connect_room(config_path: &Path, config: &Config, selector: &str) -> Re
         )
         .await?;
     }
-    let runtime = room_state_dir(&profile);
+    let runtime = room_state_dir_for_config(config_path, &profile);
     start_with_state_dir(&config_file, &runtime).await?;
     set_room_connection_intent(&runtime, true)?;
     println!("房间已连接：{}（profile {profile}）", room.name);
@@ -770,6 +785,15 @@ async fn disconnect_room(
     config: &Config,
     selector: &str,
 ) -> Result<(), String> {
+    // Stopping a local process must remain possible while the control server
+    // or account session is offline.  Room IDs are stable, so use the local
+    // profile index before falling back to the online room lookup.
+    if let Some((config_file, runtime)) = find_local_room_profile(config_path, selector)? {
+        let stopped = stop_with_state_dir(&config_file, &runtime).await;
+        set_room_connection_intent(&runtime, false)?;
+        return stopped;
+    }
+
     let response = room_control_request(config, reqwest::Method::GET, "", None).await?;
     let user_id = response
         .get("user_id")
@@ -779,14 +803,45 @@ async fn disconnect_room(
     let profile = room_profile_id(&config.control.server_url, user_id, &room.id);
     let config_file = room_config_path_for(config_path, &profile);
     if !config_file.exists() {
-        set_room_connection_intent(&room_state_dir(&profile), false)?;
+        set_room_connection_intent(&room_state_dir_for_config(config_path, &profile), false)?;
         println!("房间没有本地 profile，未运行。");
         return Ok(());
     }
-    let runtime = room_state_dir(&profile);
+    let runtime = room_state_dir_for_config(config_path, &profile);
     let stopped = stop_with_state_dir(&config_file, &runtime).await;
     set_room_connection_intent(&runtime, false)?;
     stopped
+}
+
+fn find_local_room_profile(
+    config_path: &Path,
+    selector: &str,
+) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    let Some(root) = config_path.parent().map(|parent| parent.join("rooms")) else {
+        return Ok(None);
+    };
+    let Ok(entries) = fs::read_dir(root) else {
+        return Ok(None);
+    };
+    for entry in entries.flatten() {
+        let profile = entry.path();
+        let config_file = profile.join("p2wlan-config.json");
+        if !config_file.is_file() {
+            continue;
+        }
+        let candidate = load_config(&config_file)?;
+        if candidate.network.network_id == selector {
+            let profile_id = profile
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "本地房间 profile 名称无效".to_string())?;
+            return Ok(Some((
+                config_file,
+                room_state_dir_for_config(config_path, profile_id),
+            )));
+        }
+    }
+    Ok(None)
 }
 
 fn set_room_connection_intent(runtime: &Path, wanted: bool) -> Result<(), String> {
@@ -819,26 +874,67 @@ async fn leave_room(config_path: &Path, config: &Config, selector: &str) -> Resu
     let profile = room_profile_id(&config.control.server_url, user_id, &room.id);
     let config_file = room_config_path_for(config_path, &profile);
     if config_file.exists() {
-        stop_with_state_dir(&config_file, &room_state_dir(&profile)).await?;
-        set_room_connection_intent(&room_state_dir(&profile), false)?;
+        let runtime = room_state_dir_for_config(config_path, &profile);
+        stop_with_state_dir(&config_file, &runtime).await?;
+        set_room_connection_intent(&runtime, false)?;
     }
-    let suffix = if room.role == "owner" {
-        format!("/{}", room.id)
-    } else {
-        format!("/{}/leave", room.id)
-    };
     room_control_request(
         config,
-        if room.role == "owner" {
-            reqwest::Method::DELETE
-        } else {
-            reqwest::Method::POST
-        },
-        &suffix,
+        reqwest::Method::POST,
+        &format!("/{}/leave", room.id),
         None,
     )
     .await?;
     println!("已离开房间：{}。", room.name);
+    Ok(())
+}
+
+async fn delete_room(
+    config_path: &Path,
+    config: &Config,
+    selector: &str,
+) -> Result<(), String> {
+    let response = room_control_request(config, reqwest::Method::GET, "", None).await?;
+    let user_id = response
+        .get("user_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "服务器未返回当前 user_id".to_string())?;
+    let room = find_room_in_response(&response, selector)?;
+    if room.role != "owner" {
+        return Err("只有房主可以删除房间；成员请使用 room leave".to_string());
+    }
+    room_control_request(
+        config,
+        reqwest::Method::DELETE,
+        &format!("/{}", room.id),
+        None,
+    )
+    .await?;
+    // A deleted room must not leave a reconnecting local daemon behind. Keep
+    // cleanup after the remote mutation so a transient control failure does
+    // not erase a still-valid local profile.
+    let profile = room_profile_id(&config.control.server_url, user_id, &room.id);
+    let config_file = room_config_path_for(config_path, &profile);
+    let runtime = room_state_dir_for_config(config_path, &profile);
+    if config_file.exists() {
+        if let Err(error) = stop_with_state_dir(&config_file, &runtime).await {
+            eprintln!("警告：房间已删除，但本地 daemon 停止失败：{error}");
+        }
+    }
+    if let Some(profile_dir) = config_file.parent() {
+        if let Err(error) = fs::remove_dir_all(profile_dir) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("警告：房间已删除，但本地 profile 清理失败：{error}");
+            }
+        }
+    }
+    if let Err(error) = fs::remove_dir_all(&runtime) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("警告：房间已删除，但本地运行状态清理失败：{error}");
+        }
+    }
+    println!("房间已删除：{}。", room.name);
     Ok(())
 }
 
@@ -921,8 +1017,8 @@ fn room_config_path_for(main_config_path: &Path, profile: &str) -> PathBuf {
         .join("p2wlan-config.json")
 }
 
-fn room_state_dir(profile: &str) -> PathBuf {
-    state_dir().join("rooms").join(profile)
+fn room_state_dir_for_config(main_config_path: &Path, profile: &str) -> PathBuf {
+    state_dir_for_config(main_config_path).join("rooms").join(profile)
 }
 
 fn room_diagnostics_bind(profile: &str) -> String {

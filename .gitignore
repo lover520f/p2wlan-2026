@@ -55,6 +55,10 @@ docs/*
 !docs/linux-cli.md
 !docs/room-device-controls.md
 !docs/relay-lifecycle-and-authorization.md
+!docs/self-hosting-and-notifications-plan.md
+!docs/server-deployment.md
+!docs/server-upgrade.md
+!docs/staging-validation.md
 
 # Staging deployment templates (kept on disk, never published)
 deploy/staging/*.env.example

@@ -111,6 +111,7 @@ fn auth_error(message: &str, status: u16) -> String {
 fn clear_device_credential(config: &mut Config) {
     config.control.device_credential.clear();
     config.control.credential_issued = false;
+    config.control.registration_seq = None;
 }
 
 async fn fetch_github_release(repo: &str, tag: Option<&str>) -> Result<GitHubRelease, String> {

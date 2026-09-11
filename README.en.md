@@ -162,6 +162,26 @@ p2wlan route verify
 p2wlan support-bundle --upload
 ```
 
+Fresh installs do not contain or contact a project-owned Control Plane or Relay. Configure your own server before signing in:
+
+```bash
+p2wlan config set control https://control.example.com
+p2wlan login -u your-name                 # email or username
+p2wlan account show                       # show the current account identity
+```
+
+Self-hosted Control/Relay installation, checksum verification, systemd operation, backups, and independent upgrades are documented in [`docs/server-deployment.md`](docs/server-deployment.md) and [`docs/server-upgrade.md`](docs/server-upgrade.md):
+
+```bash
+sudo ./scripts/install-server.sh --version server-vX.Y.Z --role all
+sudo p2wlan-server status
+sudo p2wlan-server update --version server-vX.Y.Z
+sudo p2wlan-server backup
+sudo p2wlan-server rollback
+```
+
+The Actions staging workflow can target `47.109.40.237` only through GitHub Environment variables and secrets. The local `~/.ssh/ali.pem` key must never be committed or uploaded as an artifact; see [`docs/staging-validation.md`](docs/staging-validation.md).
+
 ## How It Works
 
 P2WLAN separates connection control from data transport:

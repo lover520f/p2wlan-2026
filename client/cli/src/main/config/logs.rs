@@ -8,8 +8,8 @@ fn log_follow_command(path: &std::path::Path, lines: usize) -> Command {
     command
 }
 
-fn logs(lines: usize, follow: bool) -> Result<(), String> {
-    let path = state_dir().join("p2wlan-daemon.log");
+fn logs(config_path: &Path, lines: usize, follow: bool) -> Result<(), String> {
+    let path = state_dir_for_config(config_path).join("p2wlan-daemon.log");
     if follow {
         let status = log_follow_command(&path, lines)
             .status()

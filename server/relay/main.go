@@ -1,13 +1,23 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 )
 
+var (
+	buildVersion = "dev"
+	buildCommit  = "unknown"
+)
+
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Printf("p2wlan-relay %s (%s)\n", buildVersion, buildCommit)
+		return
+	}
 	config, err := parseConfig(os.Args[1:])
 	if err != nil {
 		log.Fatalf("config error: %v", err)

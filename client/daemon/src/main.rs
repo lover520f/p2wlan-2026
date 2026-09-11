@@ -11,7 +11,9 @@ use std::fs::OpenOptions;
 use std::path::PathBuf;
 use tracing::{error, info, warn};
 
-const DEFAULT_CONTROL_SERVER: &str = "http://47.109.40.237:18080";
+// The daemon never chooses a control plane.  The user or provisioning tool
+// must provide one explicitly in the config or with --control.
+const DEFAULT_CONTROL_SERVER: &str = "";
 const DEFAULT_NETWORK_ID: &str = "default";
 
 include!("main/cli.rs");

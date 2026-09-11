@@ -50,6 +50,9 @@ async fn run_control_loop(
                 .await;
                 match registration {
                     Ok((node_id, virtual_ip, cidr, server_relay_servers, relay_catalog, registration_seq)) => {
+                        let registration_seq_changed =
+                            config.control.registration_seq != registration_seq;
+                        config.control.registration_seq = registration_seq;
                         let _ = critical_auth_tx.send(Some(CriticalControlAuth {
                             base_url: base_url.clone(),
                             token: token.clone(),
@@ -93,7 +96,7 @@ async fn run_control_loop(
                                 config_changed = true;
                             }
                         }
-                        if config_changed {
+                        if config_changed || registration_seq_changed {
                             if let Some(ref path) = config_path {
                                 let mut persisted = config.clone();
                                 persisted.control.auth_token.clear();

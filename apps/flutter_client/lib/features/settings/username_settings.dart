@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/api/control_api.dart';
 import '../../app/app_strings.dart';
+import '../../shared/widgets/app_notice.dart';
 
 /// Usernames are account display names, independent of login email and devices.
 class UsernameSettings extends StatefulWidget {
@@ -10,11 +11,13 @@ class UsernameSettings extends StatefulWidget {
     required this.server,
     required this.token,
     this.email = '',
+    this.username = '',
     this.onProfileLoaded,
   });
   final String server;
   final String token;
   final String email;
+  final String username;
   final ValueChanged<AccountProfile>? onProfileLoaded;
   @override
   State<UsernameSettings> createState() => _UsernameSettingsState();
@@ -33,6 +36,8 @@ class _UsernameSettingsState extends State<UsernameSettings> {
   void initState() {
     super.initState();
     _email = widget.email.trim();
+    _name.text = widget.username.trim();
+    _loaded = _name.text.isNotEmpty;
     _load();
   }
 
@@ -41,6 +46,11 @@ class _UsernameSettingsState extends State<UsernameSettings> {
     super.didUpdateWidget(oldWidget);
     final nextEmail = widget.email.trim();
     if (nextEmail.isNotEmpty && nextEmail != _email) _email = nextEmail;
+    final nextUsername = widget.username.trim();
+    if (nextUsername.isNotEmpty && nextUsername != _name.text.trim()) {
+      _name.text = nextUsername;
+      _loaded = true;
+    }
   }
 
   Future<void> _load() async {
@@ -61,6 +71,7 @@ class _UsernameSettingsState extends State<UsernameSettings> {
     } catch (_) {
       if (mounted) {
         _error = AppStringsScope.of(context).settingsUsernameLoadError;
+        showAppNotice(context, content: Text(_error!));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -85,7 +96,10 @@ class _UsernameSettingsState extends State<UsernameSettings> {
       widget.onProfileLoaded?.call(profile);
       _saved = AppStringsScope.of(context).settingsUsernameSaved;
     } on ControlApiException catch (error) {
-      if (mounted) _error = error.message;
+      if (mounted) {
+        _error = error.message;
+        showAppNotice(context, content: Text(error.message));
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -145,7 +159,7 @@ class _UsernameSettingsState extends State<UsernameSettings> {
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
               if (_busy) const LinearProgressIndicator(),
-              if (_error != null)
+              if (_error != null && _name.text.trim().isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Text(

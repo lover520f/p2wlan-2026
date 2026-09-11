@@ -1,6 +1,6 @@
 async fn status(config_path: &Path, json: bool) -> Result<(), String> {
     let config = load_config(config_path)?;
-    match fetch_status(&status_url(&config)).await {
+    match fetch_status_at(&status_url(&config), &state_dir_for_config(config_path)).await {
         Ok(snapshot) if json => {
             println!(
                 "{}",
@@ -35,7 +35,19 @@ async fn status(config_path: &Path, json: bool) -> Result<(), String> {
             Ok(())
         }
         Err(error) => {
-            println!("状态：未运行");
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "ok": false,
+                        "data": {"state": "unknown"},
+                        "error": {"code": "daemon_unavailable", "message": error.clone()}
+                    })
+                );
+            } else {
+                println!("状态：未运行");
+            }
             Err(error)
         }
     }
@@ -54,15 +66,17 @@ async fn doctor(config_path: &Path) -> Result<(), String> {
 
     let config = load_config(config_path)?;
     let mut suggestions = Vec::new();
+    let has_user_session = cli_session_available(config_path, &config)?;
+    let has_device_session = !config.control.device_credential.trim().is_empty();
     println!(
-        "登录：{}",
-        if config.control.auth_token.is_empty() {
-            suggestions.push("运行 p2wlan login -u <邮箱> 完成登录".to_string());
-            "no"
-        } else {
-            "yes"
-        }
+        "登录：{}（账号会话={}，设备凭据={}）",
+        if has_user_session || has_device_session { "yes" } else { "no" },
+        if has_user_session { "yes" } else { "no" },
+        if has_device_session { "yes" } else { "no" },
     );
+    if !has_user_session && !has_device_session {
+        suggestions.push("运行 p2wlan login -u <邮箱或用户名> 完成登录".to_string());
+    }
     println!("控制面：{}", config.control.server_url);
     println!("网络：{}", config.network.network_id);
     println!(
@@ -126,7 +140,7 @@ async fn doctor(config_path: &Path) -> Result<(), String> {
             .push("如果希望优先直连，请运行：p2wlan config set relay-policy auto".to_string());
     }
 
-    match fetch_status(&status_url(&config)).await {
+    match fetch_status_at(&status_url(&config), &state_dir_for_config(config_path)).await {
         Ok(snapshot) => {
             println!("Daemon：运行中");
             if let Some(summary) = protocol_boundary_summary(&snapshot) {

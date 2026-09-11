@@ -14,6 +14,7 @@ import '../../core/models/diagnostics_models.dart';
 import '../../core/state/settings_store.dart';
 import '../../core/state/status_store.dart';
 import '../../shared/widgets/windows_window_controls.dart';
+import '../../shared/widgets/app_notice.dart';
 import 'login_errors.dart';
 
 class LoginPage extends StatefulWidget {
@@ -54,7 +55,6 @@ class _LoginPageState extends State<LoginPage> {
   var _submitting = false;
   var _showPassword = false;
   var _showAdvanced = false;
-  _LoginError? _error;
 
   @override
   void initState() {
@@ -64,10 +64,12 @@ class _LoginPageState extends State<LoginPage> {
     _controlApi = widget.controlApi ?? ControlApi();
     final settings = widget.settingsStore.settings;
     _controlServerController = TextEditingController(
-      text: settings.controlServer.trim().isEmpty
-          ? defaultControlServer
-          : settings.controlServer,
+      text: settings.controlServer,
     );
+    // A fresh install has no control server by design. Keep the required
+    // server field visible so the first action is configuration, not a
+    // failed login followed by hunting through Advanced options.
+    _showAdvanced = settings.controlServer.trim().isEmpty;
     _emailController = TextEditingController();
     _passwordController = TextEditingController();
   }
@@ -220,19 +222,6 @@ class _LoginPageState extends State<LoginPage> {
                                 onSubmitted: (_) =>
                                     _submitting ? null : _submit(),
                               ),
-                              // Keep this slot at a stable height. Inserting
-                              // the error banner into the column used to move
-                              // the submit button on every response, which was
-                              // especially visible on Android during retries.
-                              SizedBox(
-                                height: 88,
-                                child: Align(
-                                  alignment: Alignment.topCenter,
-                                  child: _error == null
-                                      ? const SizedBox.shrink()
-                                      : _LoginErrorBanner(error: _error!),
-                                ),
-                              ),
                               const SizedBox(height: AppTokens.space16),
                               SizedBox(
                                 height: 48,
@@ -365,37 +354,37 @@ class _LoginPageState extends State<LoginPage> {
     final email = _emailController.text.trim();
     final password = _passwordController.text;
     if (email.isEmpty) {
-      setState(() {
-        _error = _LoginError(
+      _presentError(
+        _LoginError(
           title: strings.loginFailedTitle,
           body: strings.loginErrorEmailRequired,
-        );
-      });
+        ),
+      );
       return;
     }
     if (password.length < 6) {
-      setState(() {
-        _error = _LoginError(
+      _presentError(
+        _LoginError(
           title: strings.loginFailedTitle,
           body: strings.loginErrorPasswordTooShort,
-        );
-      });
+        ),
+      );
       return;
     }
     try {
-      normalizeControlServer(_controlServerController.text);
+      final server = normalizeControlServer(_controlServerController.text);
+      if (server.isEmpty) throw const FormatException('empty control server');
     } on FormatException {
-      setState(() {
-        _error = _LoginError(
+      _presentError(
+        _LoginError(
           title: strings.loginErrorInvalidServerTitle,
           body: strings.loginErrorInvalidServerBody,
-        );
-      });
+        ),
+      );
       return;
     }
     setState(() {
       _submitting = true;
-      _error = null;
     });
     try {
       final session = await _controlApi.authenticate(
@@ -426,8 +415,8 @@ class _LoginPageState extends State<LoginPage> {
       widget.onAuthenticated();
     } catch (error) {
       if (mounted) {
-        setState(
-          () => _error = error is AccountSessionChangeException
+        _presentError(
+          error is AccountSessionChangeException
               ? _LoginError(
                   title: strings.loginFailedTitle,
                   body: error.message,
@@ -463,18 +452,27 @@ class _LoginPageState extends State<LoginPage> {
       widget.onAuthenticated();
     } catch (_) {
       if (mounted) {
-        setState(() {
-          _error = _LoginError(
+        _presentError(
+          _LoginError(
             title: strings.loginErrorManualModeTitle,
             body: strings.loginErrorManualModeBody,
-          );
-        });
+          ),
+        );
       }
     } finally {
       if (mounted) {
         setState(() => _submitting = false);
       }
     }
+  }
+
+  void _presentError(_LoginError error) {
+    if (!mounted) return;
+    showAppNotice(
+      context,
+      duration: const Duration(seconds: 5),
+      content: _LoginErrorBanner(error: error),
+    );
   }
 }
 

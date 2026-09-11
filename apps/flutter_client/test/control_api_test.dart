@@ -93,7 +93,7 @@ void main() {
   });
 
   test('default control server matches the desktop client default', () {
-    expect(defaultControlServer, 'http://47.109.40.237:18080');
+    expect(defaultControlServer, isEmpty);
   });
 
   test('JWT expiry guard identifies expired tokens without rejecting opaque tokens', () {
@@ -271,7 +271,7 @@ void main() {
     await expectLater(
       () => api.authenticate(
         mode: AuthMode.login,
-        controlServer: defaultControlServer,
+        controlServer: 'http://control.example.com',
         email: 'user@example.com',
         password: 'password',
       ),

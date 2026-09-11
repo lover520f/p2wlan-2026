@@ -78,9 +78,9 @@ impl RelayWriteBoundaryPermit {
 }
 
 pub(super) fn infer_default_relay_servers(control_server_url: &str) -> Vec<String> {
-    if std::env::var("P2WLAN_DISABLE_DEFAULT_RELAY").as_deref() == Ok("1") {
-        return Vec::new();
-    }
+    // Relay endpoints are never inferred from the control host.  A relay must
+    // arrive through an authenticated server catalog or an explicit local
+    // setting.  Keep the environment override for controlled test/dev setups.
     if let Ok(configured) = std::env::var("P2WLAN_DEFAULT_RELAY") {
         return configured
             .split(',')
@@ -90,28 +90,8 @@ pub(super) fn infer_default_relay_servers(control_server_url: &str) -> Vec<Strin
             .collect();
     }
 
-    let Some(host) = control_server_host(control_server_url) else {
-        return Vec::new();
-    };
-    let normalized = host.trim_matches(['[', ']']);
-    if normalized.is_empty()
-        || normalized.eq_ignore_ascii_case("localhost")
-        || normalized.eq_ignore_ascii_case("ctrl.test")
-        || normalized.ends_with(".test")
-        || normalized == "127.0.0.1"
-        || normalized == "::1"
-    {
-        return Vec::new();
-    }
-
-    let endpoint = if host.starts_with('[') {
-        format!("{host}:18081")
-    } else if host.contains(':') {
-        format!("[{host}]:18081")
-    } else {
-        format!("{host}:18081")
-    };
-    vec![format!("default@tcp://{endpoint}")]
+    let _ = control_server_url;
+    Vec::new()
 }
 
 pub(super) fn effective_relay_allow_insecure_plaintext(
@@ -157,25 +137,6 @@ pub(super) fn relay_spec_is_plaintext(spec: &str) -> bool {
         && !endpoint
             .get(..6)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("tls://"))
-}
-
-fn control_server_host(control_server_url: &str) -> Option<String> {
-    let trimmed = control_server_url.trim();
-    let without_scheme = trimmed
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(trimmed);
-    let authority = without_scheme.split('/').next()?.split('@').next_back()?;
-    if authority.starts_with('[') {
-        let end = authority.find(']')?;
-        return Some(authority[..=end].to_string());
-    }
-    authority
-        .split(':')
-        .next()
-        .map(str::trim)
-        .filter(|host| !host.is_empty())
-        .map(ToString::to_string)
 }
 
 pub(super) fn relay_candidates_from_sources(

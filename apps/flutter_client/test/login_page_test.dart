@@ -51,14 +51,14 @@ void main() {
 
     expect(decoratedColors, contains(AppTokens.colorDarkSurface));
     expect(decoratedColors, isNot(contains(AppTokens.colorSurface)));
-    expect(inputDecorations, hasLength(2));
+    expect(inputDecorations, hasLength(3));
     expect(
       inputDecorations.map((decoration) => decoration.fillColor),
       everyElement(AppTokens.colorDarkSurface),
     );
   });
 
-  testWidgets('default form shows credentials only, advanced stays hidden', (
+  testWidgets('first launch keeps the required server field visible', (
     tester,
   ) async {
     final stores = (await tester.runAsync(_makeStores))!;
@@ -71,11 +71,11 @@ void main() {
     expect(find.text('Sign in'), findsOneWidget);
     expect(find.text("Don't have an account? Create one"), findsOneWidget);
     expect(find.text('Advanced options'), findsOneWidget);
-    expect(find.text('Self-hosted server'), findsNothing);
-    expect(find.text('Continue in manual / offline mode'), findsNothing);
+    expect(find.text('Self-hosted server'), findsOneWidget);
+    expect(find.text('Continue in manual / offline mode'), findsOneWidget);
   });
 
-  testWidgets('sign in uses the default control server when none saved', (
+  testWidgets('sign in requires an explicitly configured control server', (
     tester,
   ) async {
     final stores = (await tester.runAsync(_makeStores))!;
@@ -86,12 +86,16 @@ void main() {
     await tester.enterText(find.byType(TextField).at(0), 'a@example.com');
     await tester.enterText(find.byType(TextField).at(1), 'secret123');
     await tester.tap(find.text('Sign in'));
-    await _waitFor(tester, () => fake.authenticateCalls == 1);
+    await tester.pumpAndSettle();
 
-    expect(fake.lastMode, AuthMode.login);
-    expect(fake.lastControlServer, defaultControlServer);
-    expect(fake.lastEmail, 'a@example.com');
-    expect(fake.lastPassword, 'secret123');
+    expect(fake.authenticateCalls, 0);
+    expect(find.text('Invalid control server address'), findsOneWidget);
+    expect(
+      find.text(
+        'Enter a complete HTTP or HTTPS URL, for example https://example.com',
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('saved custom server is indicated and used', (tester) async {
@@ -109,8 +113,10 @@ void main() {
     await _pumpLogin(tester, stores, controlApi: fake);
 
     expect(find.text('Using a self-hosted server'), findsOneWidget);
-    await tester.tap(find.text('Advanced options'));
-    await tester.pumpAndSettle();
+    if (find.text('Self-hosted server').evaluate().isEmpty) {
+      await tester.tap(find.text('Advanced options'));
+      await tester.pumpAndSettle();
+    }
     expect(
       tester
           .widget<TextField>(
@@ -216,7 +222,12 @@ void main() {
     addTearDown(stores.dispose);
     final fake = _FakeControlApi(error: const ControlApiException('邮箱或密码错误'));
 
-    await _pumpLogin(tester, stores, controlApi: fake);
+    await _pumpLogin(
+      tester,
+      stores,
+      controlApi: fake,
+      controlServer: 'https://control.example.com',
+    );
     await tester.enterText(find.byType(TextField).at(0), 'a@example.com');
     await tester.enterText(find.byType(TextField).at(1), 'secret123');
     await tester.tap(find.text('Sign in'));
@@ -235,7 +246,12 @@ void main() {
       error: const ControlApiException('无法连接控制服务器：无法连接'),
     );
 
-    await _pumpLogin(tester, stores, controlApi: fake);
+    await _pumpLogin(
+      tester,
+      stores,
+      controlApi: fake,
+      controlServer: 'https://control.example.com',
+    );
     await tester.enterText(find.byType(TextField).at(0), 'a@example.com');
     await tester.enterText(find.byType(TextField).at(1), 'secret123');
     await tester.tap(find.text('Sign in'));
@@ -257,7 +273,12 @@ void main() {
     addTearDown(stores.dispose);
     final fake = _FakeControlApi(error: Exception('Something broke'));
 
-    await _pumpLogin(tester, stores, controlApi: fake);
+    await _pumpLogin(
+      tester,
+      stores,
+      controlApi: fake,
+      controlServer: 'https://control.example.com',
+    );
     await tester.enterText(find.byType(TextField).at(0), 'a@example.com');
     await tester.enterText(find.byType(TextField).at(1), 'secret123');
     await tester.tap(find.text('Sign in'));
@@ -295,7 +316,13 @@ void main() {
     addTearDown(stores.dispose);
     final fake = _FakeControlApi(error: const ControlApiException('邮箱或密码错误'));
 
-    await _pumpLogin(tester, stores, controlApi: fake, languageCode: 'zh-Hans');
+    await _pumpLogin(
+      tester,
+      stores,
+      controlApi: fake,
+      controlServer: 'https://control.example.com',
+      languageCode: 'zh-Hans',
+    );
     await tester.enterText(find.byType(TextField).at(0), 'a@example.com');
     await tester.enterText(find.byType(TextField).at(1), 'secret123');
     await tester.tap(find.text('登录'));
@@ -323,6 +350,7 @@ void main() {
       tester,
       stores,
       controlApi: fake,
+      controlServer: 'https://control.example.com',
       onAuthenticated: () {
         authenticated += 1;
       },
@@ -357,8 +385,10 @@ void main() {
         authenticated += 1;
       },
     );
-    await tester.tap(find.text('Advanced options'));
-    await tester.pumpAndSettle();
+    if (find.text('Self-hosted server').evaluate().isEmpty) {
+      await tester.tap(find.text('Advanced options'));
+      await tester.pumpAndSettle();
+    }
     expect(
       find.text(
         'Does not connect to a control server; for local network testing and diagnostics only.',
@@ -388,6 +418,7 @@ void main() {
       tester,
       stores,
       controlApi: fake,
+      controlServer: 'https://control.example.com',
       onAuthenticated: () {
         authenticated += 1;
       },
@@ -411,7 +442,7 @@ void main() {
     fake.completer!.complete(
       const AuthSession(
         token: 'test-token',
-        controlServer: defaultControlServer,
+        controlServer: 'https://control.example.com',
       ),
     );
     await _waitFor(tester, () => authenticated == 1);
@@ -428,7 +459,12 @@ void main() {
       error: const ControlApiException('请求过于频繁，请稍后再试'),
     );
 
-    await _pumpLogin(tester, stores, controlApi: fake);
+    await _pumpLogin(
+      tester,
+      stores,
+      controlApi: fake,
+      controlServer: 'https://control.example.com',
+    );
     await tester.enterText(find.byType(TextField).at(0), 'pyu');
     await tester.enterText(find.byType(TextField).at(1), 'secret123');
     final before = tester.getTopLeft(find.byType(FilledButton)).dy;
@@ -449,7 +485,12 @@ void main() {
     addTearDown(stores.dispose);
     final fake = _FakeControlApi(completer: Completer<AuthSession>());
 
-    await _pumpLogin(tester, stores, controlApi: fake);
+    await _pumpLogin(
+      tester,
+      stores,
+      controlApi: fake,
+      controlServer: 'https://control.example.com',
+    );
     await tester.enterText(find.byType(TextField).at(0), 'a@example.com');
     await tester.enterText(find.byType(TextField).at(1), 'secret123');
     await tester.tap(find.text('Sign in'));
@@ -459,7 +500,7 @@ void main() {
     fake.completer!.complete(
       const AuthSession(
         token: 'test-token',
-        controlServer: defaultControlServer,
+        controlServer: 'https://control.example.com',
       ),
     );
     await tester.runAsync(
@@ -488,8 +529,6 @@ void main() {
     );
     expect(fake.authenticateCalls, 0);
 
-    await tester.tap(find.text('Advanced options'));
-    await tester.pumpAndSettle();
     await _enterInvalidServerAndSubmit(tester, 'ftp://example.com');
     expect(find.text('Invalid control server address'), findsOneWidget);
     expect(fake.authenticateCalls, 0);
@@ -528,8 +567,6 @@ void main() {
         authenticated += 1;
       },
     );
-    await tester.tap(find.text('Advanced options'));
-    await tester.pumpAndSettle();
     final offlineButton = find.text('Continue in manual / offline mode');
     await tester.ensureVisible(offlineButton);
     await tester.pump();
@@ -572,8 +609,10 @@ void main() {
       );
       expect(tester.takeException(), isNull);
 
-      await tester.tap(find.text('Advanced options'));
-      await tester.pumpAndSettle();
+      if (find.text('Self-hosted server').evaluate().isEmpty) {
+        await tester.tap(find.text('Advanced options'));
+        await tester.pumpAndSettle();
+      }
       expect(tester.takeException(), isNull);
     });
   }
@@ -584,9 +623,17 @@ Future<void> _pumpLogin(
   _Stores stores, {
   PlatformCapabilities? capabilities,
   ControlApi? controlApi,
+  String? controlServer,
   String languageCode = 'en',
   VoidCallback? onAuthenticated,
 }) async {
+  if (controlServer != null) {
+    await tester.runAsync(
+      () => stores.settingsStore.updateSettings(
+        stores.settingsStore.settings.copyWith(controlServer: controlServer),
+      ),
+    );
+  }
   await tester.pumpWidget(
     MaterialApp(
       theme: AppTheme.lightTheme,

@@ -124,6 +124,7 @@ impl Config {
                 auth_token: String::new(),
                 device_credential: String::new(),
                 credential_issued: false,
+                registration_seq: None,
                 reconnect_interval_secs: default_reconnect_interval(),
                 heartbeat_interval_secs: default_heartbeat_interval(),
                 proxy_mode: ControlProxyMode::default(),

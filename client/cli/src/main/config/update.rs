@@ -43,7 +43,10 @@ fn temp_update_dir() -> Result<PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("系统时间异常：{error}"))?
         .as_millis();
-    Ok(env::temp_dir().join(format!("p2wlan-update-{}-{now}", std::process::id())))
+    let path = env::temp_dir().join(format!("p2wlan-update-{}-{now}", std::process::id()));
+    fs::create_dir(&path)
+        .map_err(|error| format!("无法创建安全临时目录 {}：{error}", path.display()))?;
+    Ok(path)
 }
 
 async fn download_to_file(url: &str, path: &Path) -> Result<(), String> {
@@ -63,6 +66,9 @@ async fn download_to_file(url: &str, path: &Path) -> Result<(), String> {
     if !status.is_success() {
         return Err(format!("下载更新包返回 HTTP {status}"));
     }
+    if response.content_length().is_some_and(|size| size > 100 * 1024 * 1024) {
+        return Err("更新包超过 100 MiB，已拒绝下载".to_string());
+    }
     let bytes = response
         .bytes()
         .await
@@ -72,15 +78,58 @@ async fn download_to_file(url: &str, path: &Path) -> Result<(), String> {
 }
 
 fn extract_tar_gz(archive: &Path, directory: &Path) -> Result<(), String> {
+    let listing = Command::new("tar")
+        .arg("-tzf")
+        .arg(archive)
+        .output()
+        .map_err(|error| format!("无法检查更新包：{error}"))?;
+    if !listing.status.success() {
+        return Err("更新包目录索引无效".to_string());
+    }
+    for raw in String::from_utf8_lossy(&listing.stdout).lines() {
+        let path = raw.trim();
+        if path.starts_with('/') || path.split('/').any(|part| part == "..") {
+            return Err(format!("更新包包含不安全路径：{path}"));
+        }
+    }
     let status = Command::new("tar")
         .arg("-xzf")
         .arg(archive)
         .arg("-C")
         .arg(directory)
+        .arg("--no-same-owner")
+        .arg("--no-same-permissions")
         .status()
         .map_err(|error| format!("无法执行 tar：{error}"))?;
     if !status.success() {
         return Err(format!("解压更新包失败（{status}）"));
+    }
+    Ok(())
+}
+
+fn verify_archive_checksum(archive: &Path, checksum_file: &Path) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    let expected = fs::read_to_string(checksum_file)
+        .map_err(|error| format!("无法读取更新包校验和：{error}"))?
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let digest = fields.next()?.trim();
+            let name = fields.next().unwrap_or_default().trim_start_matches('*');
+            if name.is_empty() || Path::new(name).file_name() == archive.file_name() {
+                Some(digest.to_ascii_lowercase())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| "校验文件中没有更新包的 SHA-256".to_string())?;
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("更新包校验和格式无效".to_string());
+    }
+    let bytes = fs::read(archive).map_err(|error| format!("无法读取更新包：{error}"))?;
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual != expected {
+        return Err(format!("更新包 SHA-256 不匹配：期望 {expected}，实际 {actual}"));
     }
     Ok(())
 }
@@ -100,10 +149,11 @@ fn install_release_binaries(package_dir: &Path, install_dir: &Path) -> Result<()
             install_dir.display()
         );
     }
-    run_install_command(vec![
+    let install_args = vec![
         OsString::from("-d"),
         install_dir.as_os_str().to_os_string(),
-    ])?;
+    ];
+    run_install_command(install_args)?;
     run_install_command(vec![
         OsString::from("-m"),
         OsString::from("0755"),
@@ -120,19 +170,26 @@ fn install_release_binaries(package_dir: &Path, install_dir: &Path) -> Result<()
 }
 
 fn run_install_command(args: Vec<OsString>) -> Result<(), String> {
-    let mut command = if is_root() {
-        Command::new("install")
-    } else {
-        let mut command = Command::new("sudo");
-        command.arg("install");
-        command
-    };
-    let status = command
+    let status = Command::new("install")
+        .args(&args)
+        .status()
+        .map_err(|error| format!("无法执行 install：{error}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    if is_root() {
+        return Err(format!("安装文件失败（{status}）"));
+    }
+    // Try the user's own directory first.  Only a genuinely unwritable
+    // destination falls back to sudo; this keeps --install-dir "$HOME/.local/bin"
+    // usable without an unnecessary privilege prompt.
+    let elevated = Command::new("sudo")
+        .arg("install")
         .args(args)
         .status()
         .map_err(|error| format!("无法执行 install：{error}"))?;
-    if !status.success() {
-        return Err(format!("安装文件失败（{status}）"));
+    if !elevated.success() {
+        return Err(format!("安装文件失败（{elevated}）"));
     }
     Ok(())
 }

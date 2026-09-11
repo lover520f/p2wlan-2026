@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use p2pnet_daemon::{Config, PathPolicy};
 use reqwest::Url;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
 use std::ffi::OsString;
@@ -17,7 +17,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod formatting;
 use formatting::*;
 
-const DEFAULT_CONTROL_SERVER: &str = "http://47.109.40.237:18080";
+// A control server is an explicit user setting.  Keep the value empty so a
+// fresh CLI cannot silently contact a project-owned deployment.
+const DEFAULT_CONTROL_SERVER: &str = "";
 const DEFAULT_NETWORK: &str = "default";
 const DEFAULT_DIAGNOSTICS_BIND: &str = "127.0.0.1:39277";
 const DEFAULT_UPDATE_REPO: &str = "yhan-sun/p2wlan";
@@ -43,6 +45,11 @@ enum Commands {
     Register(AuthArgs),
     /// Remove the saved control-server session
     Logout,
+    /// Show the current account identity from the control server
+    Account {
+        #[command(subcommand)]
+        command: AccountCommand,
+    },
     /// Start the TUN daemon in the background
     #[command(alias = "start")]
     Up,
@@ -92,7 +99,7 @@ enum Commands {
 
 #[derive(Args, Debug)]
 struct AuthArgs {
-    /// Account email address
+    /// Account email address or username
     #[arg(short = 'u', long = "username", alias = "email")]
     username: String,
     /// Account password. Omit this option to enter it without terminal echo.
@@ -114,6 +121,15 @@ enum ConfigCommand {
         /// control, network, device-name, interface, mtu, udp-bind, udp-advertise, stun, port-mapping/upnp, birthday-probing, socket-pool, diagnostics, relay, relay-regions, relay-selection-timeout, relay-policy, prefer-direct, path-policy, relay-startup-timeout, or proxy-mode
         key: String,
         value: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AccountCommand {
+    /// Show username, email, user ID, and server without exposing tokens
+    Show {
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -150,6 +166,12 @@ struct AuthResponse {
     error: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct CliSessionRecord {
+    server: String,
+    token: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
@@ -180,10 +202,11 @@ async fn run(cli: Cli) -> Result<(), String> {
         Commands::Login(args) => authenticate(&config_path, args, false).await,
         Commands::Register(args) => authenticate(&config_path, args, true).await,
         Commands::Logout => logout(&config_path).await,
+        Commands::Account { command } => account_command(&config_path, command).await,
         Commands::Up => start(&config_path).await,
         Commands::Down => stop(&config_path).await,
         Commands::Status { json } => status(&config_path, json).await,
-        Commands::Logs { lines, follow } => logs(lines, follow),
+        Commands::Logs { lines, follow } => logs(&config_path, lines, follow),
         Commands::Config { command } => config_command(&config_path, command),
         Commands::Route { command } => route_command(&config_path, command).await,
         Commands::Room { command } => room_command(&config_path, command).await,

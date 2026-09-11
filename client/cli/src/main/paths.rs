@@ -29,6 +29,20 @@ fn state_dir() -> PathBuf {
     user_home().join(".local").join("state").join("p2wlan")
 }
 
+/// Resolve runtime state by configuration identity.  A custom `--config`
+/// must not share the default PID, diagnostics token, or log with another
+/// profile.
+fn state_dir_for_config(config_path: &Path) -> PathBuf {
+    if config_path == default_config_path() {
+        return state_dir();
+    }
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    config_path.to_string_lossy().hash(&mut hasher);
+    state_dir().join("instances").join(format!("{:016x}", hasher.finish()))
+}
+
 fn user_home() -> PathBuf {
     if let Ok(user) = env::var("SUDO_USER") {
         if user != "root" {

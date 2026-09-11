@@ -170,8 +170,11 @@ if [ "$LOCAL_PACKAGE" -ne 1 ]; then
 
   WORK_DIR=$(mktemp -d "$TMP_ROOT/p2wlan-install.XXXXXX")
   ARCHIVE="$WORK_DIR/$ASSET"
+  CHECKSUM="$WORK_DIR/$ASSET.sha256"
   echo "Downloading $URL"
   download_file "$URL" "$ARCHIVE"
+  download_file "${URL}.sha256" "$CHECKSUM"
+  (cd "$WORK_DIR" && sha256sum -c "$(basename "$CHECKSUM")")
   tar -xzf "$ARCHIVE" -C "$WORK_DIR"
   PACKAGE_DIR="$WORK_DIR/p2wlan-linux-${RELEASE_ARCH}-cli"
 fi

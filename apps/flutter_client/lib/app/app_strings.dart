@@ -534,6 +534,10 @@ class AppStrings {
       isZh ? '保存本地设置失败' : 'Failed to save local settings';
 
   String get settingsUsername => isZh ? '用户名' : 'Username';
+  String get settingsUsernameNotSet => isZh ? '未设置' : 'Not set';
+  String get settingsAccountCached => isZh
+      ? '显示最近一次成功登录的账号信息；重新连接后会自动刷新。'
+      : 'Showing the last account loaded successfully; it refreshes when connected.';
   String get settingsAccountEmail => isZh ? '登录邮箱' : 'Login email';
   String get settingsAccountEmailHelper => isZh
       ? '用于登录此控制服务器的账号邮箱。'

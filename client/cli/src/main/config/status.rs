@@ -1,8 +1,4 @@
 
-async fn fetch_status(url: &str) -> Result<Value, String> {
-    fetch_status_at(url, &state_dir()).await
-}
-
 async fn fetch_status_at(url: &str, instance_state_dir: &Path) -> Result<Value, String> {
     let (status, body) =
         diagnostics_request(url, instance_state_dir, reqwest::Method::GET).await?;
@@ -24,6 +20,7 @@ async fn diagnostics_request(
 ) -> Result<(reqwest::StatusCode, String), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
+        .no_proxy()
         .build()
         .map_err(|error| error.to_string())?;
     for attempt in 0..2 {

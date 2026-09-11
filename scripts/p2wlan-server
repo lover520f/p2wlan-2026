@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR=${P2WLAN_SERVER_ROOT:-/opt/p2wlan-server}
+CONFIG_DIR=${P2WLAN_SERVER_CONFIG:-/etc/p2wlan}
+DATA_DIR=${P2WLAN_SERVER_DATA:-/var/lib/p2wlan}
+RELEASE_DIR="$ROOT_DIR/releases"
+CURRENT_LINK="$ROOT_DIR/current"
+
+usage() {
+  cat <<'EOF'
+p2wlan-server - self-hosted control/relay manager
+
+Usage:
+  sudo p2wlan-server init [--role control|relay|all]
+  sudo p2wlan-server status [--service control|relay|all]
+  sudo p2wlan-server update --archive FILE [--service control|relay|all]
+  sudo p2wlan-server update --version VERSION [--base-url URL]
+  sudo p2wlan-server backup
+  sudo p2wlan-server rollback [--version VERSION]
+  sudo p2wlan-server logs [--service control|relay]
+
+The manager never overwrites CONFIG_DIR or DATA_DIR during an update.
+Set P2WLAN_SERVER_ROOT, P2WLAN_SERVER_CONFIG, or P2WLAN_SERVER_DATA to use
+an isolated staging installation.
+EOF
+}
+
+die() { echo "p2wlan-server: $*" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "this command requires root; run with sudo"; }
+service_list() {
+  case "${1:-all}" in
+    control) printf '%s\n' p2wlan-control.service ;;
+    relay) printf '%s\n' p2wlan-relay.service ;;
+    all) printf '%s\n' p2wlan-control.service p2wlan-relay.service ;;
+    *) die "service must be control, relay, or all" ;;
+  esac
+}
+
+systemd_available() { command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; }
+restart_services() {
+  local selected=${1:-all}
+  if ! systemd_available; then return 0; fi
+  systemctl daemon-reload
+  while IFS= read -r unit; do
+    # A control-only or relay-only installation intentionally has only one
+    # unit.  Updating/rolling back with the default all selector must not
+    # fail after restarting the unit that exists.
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+      systemctl restart "$unit"
+    fi
+  done < <(service_list "$selected")
+}
+
+install_unit() {
+  local unit=$1
+  local binary=$2
+  local env_file=$3
+  install -d -m 0755 /etc/systemd/system
+  cat > "/etc/systemd/system/$unit" <<EOF
+[Unit]
+Description=P2WLAN ${binary}
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=p2wlan
+Group=p2wlan
+EnvironmentFile=-${env_file}
+ExecStart=${CURRENT_LINK}/${binary}
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+ReadWritePaths=${CONFIG_DIR} ${DATA_DIR}
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+init_server() {
+  local role=${1:-all}
+  need_root
+  case "$role" in control|relay|all) ;; *) die "role must be control, relay, or all" ;; esac
+  install -d -m 0750 "$ROOT_DIR" "$RELEASE_DIR" "$CONFIG_DIR" "$DATA_DIR"
+  if ! id p2wlan >/dev/null 2>&1; then
+    useradd --system --home-dir "$DATA_DIR" --no-create-home --shell /usr/sbin/nologin p2wlan
+  fi
+  chown -R p2wlan:p2wlan "$CONFIG_DIR" "$DATA_DIR"
+  if [ ! -f "$CONFIG_DIR/control.env" ]; then
+    install -m 0600 /dev/null "$CONFIG_DIR/control.env"
+    printf '%s\n' "PORT=18080" "DB_PATH=$DATA_DIR/p2pnet.db" "JWT_SECRET=$(openssl rand -hex 32)" >> "$CONFIG_DIR/control.env"
+  fi
+  if [ ! -f "$CONFIG_DIR/relay.env" ]; then
+    install -m 0600 /dev/null "$CONFIG_DIR/relay.env"
+    printf '%s\n' "RELAY_BIND=:18081" "RELAY_REQUIRE_AUTH=true" >> "$CONFIG_DIR/relay.env"
+  fi
+  case "$role" in
+    control) install_unit p2wlan-control.service p2wlan-control "$CONFIG_DIR/control.env" ;;
+    relay) install_unit p2wlan-relay.service p2wlan-relay "$CONFIG_DIR/relay.env" ;;
+    all)
+      install_unit p2wlan-control.service p2wlan-control "$CONFIG_DIR/control.env"
+      install_unit p2wlan-relay.service p2wlan-relay "$CONFIG_DIR/relay.env"
+      ;;
+  esac
+  if systemd_available; then systemctl daemon-reload; fi
+  echo "initialized role=$role config=$CONFIG_DIR data=$DATA_DIR"
+}
+
+archive_install() {
+  local archive=$1
+  need_root
+  [ -f "$archive" ] || die "archive not found: $archive"
+  [ -f "$archive.sha256" ] || die "missing checksum: $archive.sha256"
+  (cd "$(dirname "$archive")" && sha256sum -c "$(basename "$archive.sha256")")
+  install -d -m 0755 "$RELEASE_DIR"
+  local version
+  version=$(tar -xOf "$archive" BUILD-METADATA.txt 2>/dev/null | awk -F= '/^version=/{print $2; exit}')
+  version=${version:-archive-$(date -u +%Y%m%d%H%M%S)}
+  case "$version" in
+    ''|.|..|*[!A-Za-z0-9._-]*) die "archive contains an invalid release version: $version" ;;
+  esac
+  if ! tar -tzf "$archive" | awk '
+      $0 ~ /^\// || $0 ~ /(^|\/)\.\.($|\/)/ { bad=1 }
+      END { exit bad }
+    '; then
+    die "archive contains an unsafe path"
+  fi
+  local stage="$RELEASE_DIR/.${version}.tmp"
+  rm -rf "$stage"
+  install -d -m 0755 "$stage"
+  tar -xzf "$archive" -C "$stage" --no-same-owner
+  [ -x "$stage/p2wlan-control" ] && [ -x "$stage/p2wlan-relay" ] || die "archive is missing control or relay binary"
+  mv "$stage" "$RELEASE_DIR/$version"
+  ln -sfn "$RELEASE_DIR/$version" "$CURRENT_LINK"
+  chown -R root:root "$RELEASE_DIR/$version" "$CURRENT_LINK"
+  echo "installed $version"
+}
+
+status_server() {
+  local selected=${1:-all}
+  if systemd_available; then
+    while IFS= read -r unit; do systemctl --no-pager --full status "$unit" || true; done < <(service_list "$selected")
+  else
+    echo "systemd unavailable; current=$CURRENT_LINK"
+  fi
+  if [ -x "$CURRENT_LINK/p2wlan-control" ]; then "$CURRENT_LINK/p2wlan-control" --version || true; fi
+  if [ -x "$CURRENT_LINK/p2wlan-relay" ]; then "$CURRENT_LINK/p2wlan-relay" --version || true; fi
+}
+
+backup_server() {
+  need_root
+  install -d -m 0750 "$DATA_DIR/backups"
+  local target="$DATA_DIR/backups/p2wlan-$(date -u +%Y%m%dT%H%M%SZ)"
+  if systemd_available; then systemctl stop p2wlan-control.service 2>/dev/null || true; fi
+  install -d -m 0700 "$target"
+  [ -f "$DATA_DIR/p2pnet.db" ] && cp -p "$DATA_DIR/p2pnet.db" "$target/"
+  [ -f "$DATA_DIR/p2pnet.db-wal" ] && cp -p "$DATA_DIR/p2pnet.db-wal" "$target/"
+  [ -f "$CONFIG_DIR/control.env" ] && cp -p "$CONFIG_DIR/control.env" "$target/"
+  if systemd_available; then systemctl start p2wlan-control.service 2>/dev/null || true; fi
+  echo "$target"
+}
+
+rollback_server() {
+  need_root
+  local version=${1:-}
+  if [ -z "$version" ]; then
+    version=$(find "$RELEASE_DIR" -mindepth 1 -maxdepth 1 -type d ! -name '.*.tmp' -printf '%f\n' | sort -V | tail -n 2 | head -n 1)
+  fi
+  [ -d "$RELEASE_DIR/$version" ] || die "release not found: $version"
+  ln -sfn "$RELEASE_DIR/$version" "$CURRENT_LINK"
+  restart_services all
+  echo "rolled back to $version"
+}
+
+cmd=${1:-}
+shift || true
+case "$cmd" in
+  -h|--help|help) usage ;;
+  init)
+    role=all
+    [ "${1:-}" = --role ] && role=${2:?missing role}
+    init_server "$role"
+    ;;
+  status) status_server "${2:-${1:-all}}" ;;
+  update)
+    archive=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --archive) archive=${2:?missing archive}; shift 2 ;; --version) version=${2:?missing version}; shift 2 ;; --service) selected=${2:?missing service}; shift 2 ;; --base-url) base_url=${2:?missing URL}; shift 2 ;; *) die "unknown update option: $1" ;; esac
+    done
+    if [ -n "${archive:-}" ]; then
+      archive_install "$archive"
+    elif [ -n "${version:-}" ]; then
+      command -v curl >/dev/null 2>&1 || die "curl is required for --version updates"
+      arch=$(uname -m)
+      case "$arch" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) die "unsupported architecture: $arch" ;; esac
+      base_url=${base_url:-https://github.com/yhan-sun/p2wlan/releases/download}
+      tmp_dir=$(mktemp -d /tmp/p2wlan-server-update.XXXXXX)
+      trap 'rm -rf "$tmp_dir"' EXIT
+      archive="$tmp_dir/p2wlan-server-linux-$arch.tar.gz"
+      curl -fL --retry 3 -o "$archive" "$base_url/$version/p2wlan-server-linux-$arch.tar.gz"
+      curl -fL --retry 3 -o "$archive.sha256" "$base_url/$version/p2wlan-server-linux-$arch.tar.gz.sha256"
+      (cd "$tmp_dir" && sha256sum -c "$(basename "$archive.sha256")")
+      archive_install "$archive"
+    else
+      die "update requires --archive FILE or --version server-vX.Y.Z"
+    fi
+    restart_services "${selected:-all}"
+    ;;
+  backup) backup_server ;;
+  rollback) rollback_server "${2:-${1:-}}" ;;
+  logs) need_root; journalctl -u "p2wlan-${1:-control}.service" -f ;;
+  *) usage >&2; exit 2 ;;
+esac

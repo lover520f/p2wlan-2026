@@ -30,7 +30,7 @@ async fn update(config_path: &Path, args: UpdateArgs) -> Result<(), String> {
     }
 
     let daemon_running = match load_config(config_path) {
-        Ok(config) => fetch_status(&status_url(&config)).await.is_ok(),
+        Ok(config) => fetch_status_at(&status_url(&config), &state_dir_for_config(config_path)).await.is_ok(),
         Err(_) => false,
     };
 
@@ -39,6 +39,18 @@ async fn update(config_path: &Path, args: UpdateArgs) -> Result<(), String> {
         .map_err(|error| format!("无法创建临时目录 {}：{error}", work_dir.display()))?;
     let archive_path = work_dir.join(&asset.name);
     download_to_file(&asset.browser_download_url, &archive_path).await?;
+    if let Some(checksum_asset) = release.assets.iter().find(|candidate| {
+        candidate.name == format!("{}.sha256", asset.name) || candidate.name == "SHA256SUMS"
+    }) {
+        let checksum_path = work_dir.join(&checksum_asset.name);
+        download_to_file(&checksum_asset.browser_download_url, &checksum_path).await?;
+        verify_archive_checksum(&archive_path, &checksum_path)?;
+    } else {
+        return Err(format!(
+            "release {} 缺少 {} 的 SHA-256 校验文件",
+            release.tag_name, asset.name
+        ));
+    }
     extract_tar_gz(&archive_path, &work_dir)?;
 
     let package_dir = work_dir.join(format!("p2wlan-linux-{arch}-cli"));

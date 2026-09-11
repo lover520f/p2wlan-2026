@@ -29,7 +29,16 @@ import (
 	"github.com/yhan-sun/p2wlan/server/signaling"
 )
 
+var (
+	buildVersion = "dev"
+	buildCommit  = "unknown"
+)
+
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Printf("p2wlan-control %s (%s)\n", buildVersion, buildCommit)
+		return
+	}
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("P2PNet Control Server starting...")
 

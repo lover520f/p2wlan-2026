@@ -215,19 +215,10 @@ fn default_gateway_parsers_extract_ipv4_addresses() {
 }
 
 #[test]
-fn test_infer_default_relay_servers_from_public_control_host() {
-    assert_eq!(
-        infer_default_relay_servers("http://control.example.com:18080"),
-        vec!["default@tcp://control.example.com:18081".to_string()]
-    );
-    assert_eq!(
-        infer_default_relay_servers("https://relay.example.com/api"),
-        vec!["default@tcp://relay.example.com:18081".to_string()]
-    );
-    assert_eq!(
-        infer_default_relay_servers("http://[2001:db8::1]:18080"),
-        vec!["default@tcp://[2001:db8::1]:18081".to_string()]
-    );
+fn test_infer_default_relay_servers_never_uses_control_host() {
+    assert!(infer_default_relay_servers("http://control.example.com:18080").is_empty());
+    assert!(infer_default_relay_servers("https://relay.example.com/api").is_empty());
+    assert!(infer_default_relay_servers("http://[2001:db8::1]:18080").is_empty());
 }
 
 #[test]

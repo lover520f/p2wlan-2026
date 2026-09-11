@@ -162,6 +162,26 @@ p2wlan route verify
 p2wlan support-bundle --upload
 ```
 
+新安装不会预填或自动连接任何公共控制面或中继服务器。请先配置自己的服务端，再登录：
+
+```bash
+p2wlan config set control https://control.example.com
+p2wlan login -u your-name                 # 支持邮箱或用户名
+p2wlan account show                       # 查看当前账号身份
+```
+
+自托管 control/relay 的安装、校验、systemd 启停和独立升级见 [`docs/server-deployment.md`](docs/server-deployment.md) 与 [`docs/server-upgrade.md`](docs/server-upgrade.md)。服务端使用 `server-vX.Y.Z` 标签，客户端使用 `vX.Y.Z` 标签，两者不会互相覆盖 latest 发布。
+
+```bash
+sudo ./scripts/install-server.sh --version server-vX.Y.Z --role all
+sudo p2wlan-server status
+sudo p2wlan-server update --version server-vX.Y.Z
+sudo p2wlan-server backup
+sudo p2wlan-server rollback
+```
+
+Actions staging 上传和 `47.109.40.237` 测试约束见 [`docs/staging-validation.md`](docs/staging-validation.md)。本地 `~/.ssh/ali.pem` 只用于人工初始化或生成 CI 专用密钥，不能放进仓库或 GitHub artifact。
+
 ## 工作方式
 
 P2WLAN 将连接控制和数据传输分开：

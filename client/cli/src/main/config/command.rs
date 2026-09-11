@@ -101,8 +101,15 @@ fn config_command(path: &Path, command: ConfigCommand) -> Result<(), String> {
         ConfigCommand::Set { key, value } => {
             reject_sudo_config_write()?;
             let mut config = load_or_create_config(path)?;
+            let previous_server = config.control.server_url.clone();
             set_config_value(&mut config, &key, &value)?;
             save_config(&config, path)?;
+            if key == "control" && config.control.server_url != previous_server {
+                // A session token is bound to its issuing server.  It must
+                // never survive a server switch and later be sent to the new
+                // endpoint by room/support commands.
+                clear_cli_session_token(path)?;
+            }
             println!("已更新 {key}。重启 p2wlan 后生效。");
             Ok(())
         }
