@@ -124,9 +124,8 @@ class _NoticeState extends State<_Notice> {
                     top: 0,
                     right: 0,
                     child: IconButton(
-                      tooltip: MaterialLocalizations.of(
-                        context,
-                      ).closeButtonTooltip,
+                      tooltip: MaterialLocalizations.of(context)
+                          .closeButtonTooltip,
                       onPressed: widget.dismiss,
                       icon: const Icon(Icons.close_rounded, size: 18),
                     ),
