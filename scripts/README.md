@@ -14,6 +14,7 @@
 | `outbound-liveness/live_check.sh` | UDP outbound liveness blocked/normal 检查 | 取决于参数 | 只用于 liveness 证据，不等同 Direct 成功 |
 | `release/verify_release_identity.py` | build-info、版本、commit、SHA 和 dirty gate | 否 | release workflow 的 fail-closed gate |
 | `staging/validate_staging_config.py` | staging catalog、TLS、audience/region 和 key 配置校验 | 否 | 默认只读，不部署、不重启 |
+| `deploy-server.sh` | 从 Release/Actions 包上传服务端，或让服务器自行拉取版本 | 是 | SSH 密码由 OpenSSH 交互读取；`--start` 才启用服务并做健康检查 |
 
 每个主要入口旁边都有同名 Markdown，例如 `mini-air-smoke.sh` 对应
 `mini-air-smoke.md`。Markdown 记录前提、用法、输出字段、结果解释和限制。
@@ -25,6 +26,7 @@
 - `ALLOW_SHARED_NETWORK=1` 只能用于明确标记的共享网络诊断，不能报告为隔离验收。
 - `ALLOW_LEGACY_PLAINTEXT_RELAY=1` 只允许诊断当前 legacy HTTP/TCP 环境，不能报告 TLS relay 通过。
 - 密码、token、ticket、私钥和完整 Authorization header 不应出现在命令行日志或 artifact。
+- `deploy-server.sh` 不接受 `--password`；省略 `--identity` 时由 SSH 提示登录密码，远端 `sudo` 在 TTY 中提示管理员密码。Actions 只能使用 GitHub Environment 中的 CI 专用 SSH key，不能等待密码输入。
 - `PERSIST_PRIVILEGED_SUPERVISOR=1` 只复用本次授权 supervisor；它不是永久系统服务，机器重启或 supervisor 退出后需要重新授权。
 
 ## 结果目录

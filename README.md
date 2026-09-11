@@ -180,6 +180,17 @@ sudo p2wlan-server backup
 sudo p2wlan-server rollback
 ```
 
+发布后的服务端可以由本机上传，或让已安装 manager 的服务器自行拉取：
+
+```bash
+./scripts/deploy-server.sh --host <服务器地址> --user <SSH用户> \
+  --version server-vX.Y.Z --start
+./scripts/deploy-server.sh --mode fetch --host <服务器地址> \
+  --user <SSH用户> --version server-vX.Y.Z --start
+```
+
+省略 `--identity` 时 SSH 会在终端提示服务器密码，远端 `sudo` 会提示管理员密码；密码不会出现在命令行。Actions staging 的构建包下载、上传、服务器拉取、校验和健康检查见 [`docs/server-deployment.md`](docs/server-deployment.md)。
+
 Actions staging 上传和 `47.109.40.237` 测试约束见 [`docs/staging-validation.md`](docs/staging-validation.md)。本地 `~/.ssh/ali.pem` 只用于人工初始化或生成 CI 专用密钥，不能放进仓库或 GitHub artifact。
 
 ## 工作方式

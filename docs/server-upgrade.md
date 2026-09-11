@@ -20,6 +20,8 @@ sudo p2wlan-server status
 
 ```bash
 sudo p2wlan-server update --version server-vX.Y.Z
+sudo p2wlan-server verify --service all
+sudo p2wlan-server check --service all
 ```
 
 更新器把二进制放进版本目录，再更新 `current` 链接；配置、SQLite 数据和密钥不会被覆盖。systemd 可用时会重启选择的服务，非 systemd 主机需要自行按同一顺序停止、切换并健康检查。
@@ -29,6 +31,22 @@ sudo p2wlan-server update --version server-vX.Y.Z
 ```bash
 sudo p2wlan-server rollback
 sudo p2wlan-server status
+sudo p2wlan-server verify --service all
+sudo p2wlan-server check --service all
+```
+
+升级也可以从另一台电脑执行。部署助手会在上传前和服务器上各校验一次归档；省略 `--identity` 时 SSH 会提示输入密码，远端 `sudo` 也会在终端提示管理员密码：
+
+```bash
+./scripts/deploy-server.sh --host server.example.com --user ubuntu \
+  --version server-vX.Y.Z --start
+```
+
+已经安装 manager 的服务器可以自行从 Release 拉取：
+
+```bash
+./scripts/deploy-server.sh --mode fetch --host server.example.com \
+  --user ubuntu --version server-vX.Y.Z --start
 ```
 
 数据库使用 WAL 时必须进行停服务一致性备份；不能只复制正在运行的主数据库文件。若新版本数据库迁移不可逆，升级前必须保留完整备份，并拒绝把旧二进制直接配新数据库当作安全回滚。

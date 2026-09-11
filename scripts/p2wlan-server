@@ -13,7 +13,12 @@ p2wlan-server - self-hosted control/relay manager
 
 Usage:
   sudo p2wlan-server init [--role control|relay|all]
+  sudo p2wlan-server start [--service control|relay|all]
+  sudo p2wlan-server stop [--service control|relay|all]
+  sudo p2wlan-server restart [--service control|relay|all]
   sudo p2wlan-server status [--service control|relay|all]
+  sudo p2wlan-server verify [--service control|relay|all]
+  sudo p2wlan-server check [--service control|relay|all]
   sudo p2wlan-server update --archive FILE [--service control|relay|all]
   sudo p2wlan-server update --version VERSION [--base-url URL]
   sudo p2wlan-server backup
@@ -50,6 +55,96 @@ restart_services() {
       systemctl restart "$unit"
     fi
   done < <(service_list "$selected")
+}
+
+service_units_exist() {
+  local selected=${1:-all}
+  local found=0
+  while IFS= read -r unit; do
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+      found=1
+    fi
+  done < <(service_list "$selected")
+  [ "$found" -eq 1 ]
+}
+
+start_services() {
+  local selected=${1:-all}
+  systemd_available || die "systemd is unavailable; start the configured processes manually"
+  service_units_exist "$selected" || die "no installed systemd unit matches service=$selected"
+  systemctl daemon-reload
+  while IFS= read -r unit; do
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+      systemctl enable --now "$unit"
+    fi
+  done < <(service_list "$selected")
+}
+
+stop_services() {
+  local selected=${1:-all}
+  systemd_available || die "systemd is unavailable; stop the configured processes manually"
+  service_units_exist "$selected" || die "no installed systemd unit matches service=$selected"
+  while IFS= read -r unit; do
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+      systemctl stop "$unit"
+    fi
+  done < <(service_list "$selected")
+}
+
+env_value() {
+  local file=$1
+  local key=$2
+  [ -f "$file" ] || return 0
+  awk -F= -v key="$key" '$1 == key { value=$0; sub(/^[^=]*=/, "", value); print value; exit }' "$file"
+}
+
+verify_server() {
+  local selected=${1:-all}
+  [ -L "$CURRENT_LINK" ] || die "current release link is missing: $CURRENT_LINK"
+  [ -x "$CURRENT_LINK/p2wlan-control" ] || die "control binary is missing from $CURRENT_LINK"
+  [ -x "$CURRENT_LINK/p2wlan-relay" ] || die "relay binary is missing from $CURRENT_LINK"
+  case "$selected" in
+    control) "$CURRENT_LINK/p2wlan-control" --version ;;
+    relay) "$CURRENT_LINK/p2wlan-relay" --version ;;
+    all)
+      "$CURRENT_LINK/p2wlan-control" --version
+      "$CURRENT_LINK/p2wlan-relay" --version
+      ;;
+    *) die "service must be control, relay, or all" ;;
+  esac
+  echo "verified current=$CURRENT_LINK"
+}
+
+check_server() {
+  local selected=${1:-all}
+  verify_server "$selected"
+  if systemd_available; then
+    service_units_exist "$selected" || die "no installed systemd unit matches service=$selected"
+    while IFS= read -r unit; do
+      if systemctl cat "$unit" >/dev/null 2>&1 && ! systemctl is-active --quiet "$unit"; then
+        die "systemd unit is not active: $unit"
+      fi
+    done < <(service_list "$selected")
+  fi
+
+  if [ "$selected" = relay ]; then
+    metrics_bind=$(env_value "$CONFIG_DIR/relay.env" RELAY_METRICS_BIND)
+    if [ -n "${metrics_bind:-}" ] && command -v curl >/dev/null 2>&1; then
+      metrics_host=${metrics_bind%:*}
+      metrics_port=${metrics_bind##*:}
+      case "$metrics_host" in
+        127.0.0.1|localhost|::1|'[::1]')
+          curl -fsS "http://$metrics_host:$metrics_port/healthz" >/dev/null || die "relay healthz failed"
+          ;;
+      esac
+    fi
+  else
+    command -v curl >/dev/null 2>&1 || die "curl is required for control health checks"
+    control_port=$(env_value "$CONFIG_DIR/control.env" PORT)
+    control_port=${control_port:-18080}
+    curl -fsS "http://127.0.0.1:$control_port/health" >/dev/null || die "control /health failed on port $control_port"
+  fi
+  echo "health check passed service=$selected"
 }
 
 install_unit() {
@@ -136,8 +231,24 @@ archive_install() {
   install -d -m 0755 "$stage"
   tar -xzf "$archive" -C "$stage" --no-same-owner
   [ -x "$stage/p2wlan-control" ] && [ -x "$stage/p2wlan-relay" ] || die "archive is missing control or relay binary"
+  if [ -d "$RELEASE_DIR/$version" ]; then
+    if cmp -s "$stage/p2wlan-control" "$RELEASE_DIR/$version/p2wlan-control" &&
+      cmp -s "$stage/p2wlan-relay" "$RELEASE_DIR/$version/p2wlan-relay"; then
+      rm -rf "$stage"
+      ln -sfn "$RELEASE_DIR/$version" "$CURRENT_LINK"
+      if [ -x "$RELEASE_DIR/$version/p2wlan-server" ]; then
+        install -m 0755 "$RELEASE_DIR/$version/p2wlan-server" /usr/local/bin/p2wlan-server
+      fi
+      echo "release already installed $version"
+      return 0
+    fi
+    die "release directory already exists with different binary content: $version"
+  fi
   mv "$stage" "$RELEASE_DIR/$version"
   ln -sfn "$RELEASE_DIR/$version" "$CURRENT_LINK"
+  if [ -x "$RELEASE_DIR/$version/p2wlan-server" ]; then
+    install -m 0755 "$RELEASE_DIR/$version/p2wlan-server" /usr/local/bin/p2wlan-server
+  fi
   chown -R root:root "$RELEASE_DIR/$version" "$CURRENT_LINK"
   echo "installed $version"
 }
@@ -187,7 +298,48 @@ case "$cmd" in
     [ "${1:-}" = --role ] && role=${2:?missing role}
     init_server "$role"
     ;;
+  start)
+    selected=all
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --service) selected=${2:?missing service}; shift 2 ;; *) die "unknown start option: $1" ;; esac
+    done
+    need_root
+    start_services "$selected"
+    echo "started service=$selected"
+    ;;
+  stop)
+    selected=all
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --service) selected=${2:?missing service}; shift 2 ;; *) die "unknown stop option: $1" ;; esac
+    done
+    need_root
+    stop_services "$selected"
+    echo "stopped service=$selected"
+    ;;
+  restart)
+    selected=all
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --service) selected=${2:?missing service}; shift 2 ;; *) die "unknown restart option: $1" ;; esac
+    done
+    need_root
+    restart_services "$selected"
+    echo "restarted service=$selected"
+    ;;
   status) status_server "${2:-${1:-all}}" ;;
+  verify)
+    selected=all
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --service) selected=${2:?missing service}; shift 2 ;; *) die "unknown verify option: $1" ;; esac
+    done
+    verify_server "$selected"
+    ;;
+  check)
+    selected=all
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --service) selected=${2:?missing service}; shift 2 ;; *) die "unknown check option: $1" ;; esac
+    done
+    check_server "$selected"
+    ;;
   update)
     archive=
     while [ "$#" -gt 0 ]; do

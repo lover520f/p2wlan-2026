@@ -180,6 +180,17 @@ sudo p2wlan-server backup
 sudo p2wlan-server rollback
 ```
 
+After a server release, upload it from your workstation or let an already installed manager fetch it on the host:
+
+```bash
+./scripts/deploy-server.sh --host <server> --user <ssh-user> \
+  --version server-vX.Y.Z --start
+./scripts/deploy-server.sh --mode fetch --host <server> \
+  --user <ssh-user> --version server-vX.Y.Z --start
+```
+
+When `--identity` is omitted, OpenSSH prompts for the server password and remote `sudo` prompts for the administrator password; passwords are never command-line arguments. See [`docs/server-deployment.md`](docs/server-deployment.md) for Actions artifact download, upload/fetch modes, checksum verification, health checks, and rollback.
+
 The Actions staging workflow can target `47.109.40.237` only through GitHub Environment variables and secrets. The local `~/.ssh/ali.pem` key must never be committed or uploaded as an artifact; see [`docs/staging-validation.md`](docs/staging-validation.md).
 
 ## How It Works
