@@ -1,0 +1,71 @@
+diff --git a/server/relay/ticket.go b/server/relay/ticket.go
+index 306f5ff..3c8f1b7 100644
+--- a/server/relay/ticket.go
++++ b/server/relay/ticket.go
+@@ -122,6 +122,13 @@ func (s *RelayServer) verifyTicket(tokenStr string) (*relayTicketClaims, error)
+ 		return nil, fmt.Errorf("invalid ticket claims")
+ 	}
+ 
++	s.revocationMu.RLock()
++	feedReady := s.revocationFeedUsableLocked(time.Now())
++	s.revocationMu.RUnlock()
++	if !feedReady {
++		return nil, errRevocationFeedUnavailable
++	}
++
+ 	// Validate required claims
+ 	if claims.DeviceID == "" {
+ 		return nil, fmt.Errorf("missing device_id")
+@@ -162,6 +169,11 @@ func (s *RelayServer) verifyTicket(tokenStr string) (*relayTicketClaims, error)
+ 	if claims.NotBefore == nil {
+ 		return nil, fmt.Errorf("missing nbf")
+ 	}
++	if claims.IssuedAt.After(time.Now().Add(clockSkew)) ||
++		!claims.ExpiresAt.After(claims.IssuedAt.Time) ||
++		claims.ExpiresAt.Sub(claims.IssuedAt.Time) > 15*time.Minute {
++		return nil, fmt.Errorf("invalid ticket lifetime")
++	}
+ 	// Audience must be single value, not array
+ 	if len(claims.Audience) != 1 {
+ 		return nil, fmt.Errorf("audience must be a single value, got %d", len(claims.Audience))
+diff --git a/server/relay/types.go b/server/relay/types.go
+index f9f9229..1d836f0 100644
+--- a/server/relay/types.go
++++ b/server/relay/types.go
+@@ -82,9 +82,14 @@ type RelayServer struct {
+ 	// Online control-plane revocation feed snapshot.
+ 	revocationMu               sync.RWMutex
+ 	revocationVersion          int64
++	revocationCursor           int64
++	revocationThrough          int64
++	revocationLastSuccess      time.Time
++	revocationSyncMu           sync.Mutex
+ 	onlineRevokedTicketJTIs    map[string]struct{}
+ 	onlineRevokedDeviceIDs     map[string]struct{}
+ 	onlineRevokedCredentialIDs map[string]struct{}
++	revocationObservedAt       map[revocationIdentity]time.Time
+ }
+ 
+ type relayStats struct {
+@@ -122,6 +127,10 @@ type RelayStatsSnapshot struct {
+ 	ForwardErrorsTotal             uint64                      `json:"forward_errors_total"`
+ 	RevocationRefreshesTotal       uint64                      `json:"revocation_refreshes_total"`
+ 	RevocationRefreshFailuresTotal uint64                      `json:"revocation_refresh_failures_total"`
++	RevocationVersion              int64                       `json:"revocation_version"`
++	RevocationCursor               int64                       `json:"revocation_cursor"`
++	RevocationReady                bool                        `json:"revocation_ready"`
++	RevocationLastSuccessUnix      int64                       `json:"revocation_last_success_unix"`
+ 	AuthFailureSources             []AuthFailureSourceSnapshot `json:"auth_failure_sources,omitempty"`
+ }
+ 
+@@ -144,6 +153,10 @@ type relayTicketClaims struct {
+ }
+ 
+ type relayRevocationFeedSnapshot struct {
++	ProtocolVersion      int      `json:"protocol_version,omitempty"`
++	After                int64    `json:"after,omitempty"`
++	NextCursor           int64    `json:"next_cursor,omitempty"`
++	HasMore              bool     `json:"has_more,omitempty"`
+ 	GeneratedAt          string   `json:"generated_at"`
+ 	Version              int64    `json:"version"`
+ 	RevokedDeviceIDs     []string `json:"revoked_device_ids"`
