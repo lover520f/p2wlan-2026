@@ -9,9 +9,13 @@ class UsernameSettings extends StatefulWidget {
     super.key,
     required this.server,
     required this.token,
+    this.email = '',
+    this.onProfileLoaded,
   });
   final String server;
   final String token;
+  final String email;
+  final ValueChanged<AccountProfile>? onProfileLoaded;
   @override
   State<UsernameSettings> createState() => _UsernameSettingsState();
 }
@@ -23,11 +27,20 @@ class _UsernameSettingsState extends State<UsernameSettings> {
   bool _loaded = false;
   String? _error;
   String? _saved;
+  late String _email;
 
   @override
   void initState() {
     super.initState();
+    _email = widget.email.trim();
     _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant UsernameSettings oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextEmail = widget.email.trim();
+    if (nextEmail.isNotEmpty && nextEmail != _email) _email = nextEmail;
   }
 
   Future<void> _load() async {
@@ -36,13 +49,15 @@ class _UsernameSettingsState extends State<UsernameSettings> {
       _error = null;
     });
     try {
-      final name = await _api.profileUsername(
+      final profile = await _api.accountProfile(
         controlServer: widget.server,
         authToken: widget.token,
       );
       if (!mounted) return;
-      _name.text = name;
+      _email = profile.email.isEmpty ? _email : profile.email;
+      _name.text = profile.username;
       _loaded = true;
+      widget.onProfileLoaded?.call(profile);
     } catch (_) {
       if (mounted) {
         _error = AppStringsScope.of(context).settingsUsernameLoadError;
@@ -59,13 +74,15 @@ class _UsernameSettingsState extends State<UsernameSettings> {
       _saved = null;
     });
     try {
-      final name = await _api.profileUsername(
+      final profile = await _api.accountProfile(
         controlServer: widget.server,
         authToken: widget.token,
         username: _name.text,
       );
       if (!mounted) return;
-      _name.text = name;
+      _email = profile.email.isEmpty ? _email : profile.email;
+      _name.text = profile.username;
+      widget.onProfileLoaded?.call(profile);
       _saved = AppStringsScope.of(context).settingsUsernameSaved;
     } on ControlApiException catch (error) {
       if (mounted) _error = error.message;
@@ -93,6 +110,22 @@ class _UsernameSettingsState extends State<UsernameSettings> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (_email.isNotEmpty) ...[
+                InputDecorator(
+                  decoration: InputDecoration(
+                    labelText: strings.settingsAccountEmail,
+                    helperText: strings.settingsAccountEmailHelper,
+                    helperMaxLines: 2,
+                    prefixIcon: const Icon(Icons.alternate_email_outlined),
+                  ),
+                  child: Text(
+                    _email,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
               if (_loaded)
                 TextField(
                   controller: _name,

@@ -66,7 +66,7 @@ void main() {
 
     await _pumpLogin(tester, stores);
 
-    expect(find.text('Email'), findsOneWidget);
+    expect(find.text('Email or username'), findsOneWidget);
     expect(find.text('Password'), findsOneWidget);
     expect(find.text('Sign in'), findsOneWidget);
     expect(find.text("Don't have an account? Create one"), findsOneWidget);
@@ -286,7 +286,7 @@ void main() {
     await tester.enterText(find.byType(TextField).at(1), 'secret123');
     await tester.tap(find.text('Sign in'));
     await tester.pumpAndSettle();
-    expect(find.text('Enter your email'), findsOneWidget);
+    expect(find.text('Enter your email or username'), findsOneWidget);
     expect(fake.authenticateCalls, 0);
   });
 
@@ -315,6 +315,7 @@ void main() {
       session: const AuthSession(
         token: 'test-token',
         controlServer: 'https://cs.example.com',
+        user: {'email': 'account@example.com', 'username': 'pyu'},
       ),
     );
 
@@ -335,6 +336,8 @@ void main() {
     final settings = stores.settingsStore.settings;
     expect(settings.authToken, 'test-token');
     expect(settings.controlServer, 'https://cs.example.com');
+    expect(settings.accountEmail, 'account@example.com');
+    expect(settings.accountUsername, 'pyu');
     expect(settings.manualMode, isFalse);
     expect(authenticated, 1);
     expect(find.textContaining('test-token'), findsNothing);
@@ -370,6 +373,7 @@ void main() {
 
     final settings = stores.settingsStore.settings;
     expect(settings.authToken, '');
+    expect(settings.accountEmail, '');
     expect(settings.manualMode, isTrue);
     expect(authenticated, 1);
   });
@@ -413,6 +417,31 @@ void main() {
     await _waitFor(tester, () => authenticated == 1);
     await tester.pump();
     expect(fake.authenticateCalls, 1);
+  });
+
+  testWidgets('login error keeps the submit button in the same vertical slot', (
+    tester,
+  ) async {
+    final stores = (await tester.runAsync(_makeStores))!;
+    addTearDown(stores.dispose);
+    final fake = _FakeControlApi(
+      error: const ControlApiException('请求过于频繁，请稍后再试'),
+    );
+
+    await _pumpLogin(tester, stores, controlApi: fake);
+    await tester.enterText(find.byType(TextField).at(0), 'pyu');
+    await tester.enterText(find.byType(TextField).at(1), 'secret123');
+    final before = tester.getTopLeft(find.byType(FilledButton)).dy;
+    await tester.tap(find.text('Sign in'));
+    await _waitFor(tester, () => fake.authenticateCalls == 1);
+    await tester.pumpAndSettle();
+
+    final after = tester.getTopLeft(find.byType(FilledButton)).dy;
+    expect(after, before);
+    expect(
+      find.text('Too many attempts. Please try again later.'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('disposing the page mid-submit does not throw', (tester) async {

@@ -174,10 +174,14 @@ class _LoginPageState extends State<LoginPage> {
                               TextField(
                                 controller: _emailController,
                                 decoration: InputDecoration(
-                                  labelText: strings.email,
+                                  labelText: _register
+                                      ? strings.email
+                                      : strings.loginIdentifier,
                                   prefixIcon: const Icon(Icons.mail_outline),
                                 ),
-                                keyboardType: TextInputType.emailAddress,
+                                keyboardType: _register
+                                    ? TextInputType.emailAddress
+                                    : TextInputType.text,
                                 autofillHints: const [AutofillHints.email],
                                 textInputAction: TextInputAction.next,
                                 onSubmitted: (_) =>
@@ -216,29 +220,41 @@ class _LoginPageState extends State<LoginPage> {
                                 onSubmitted: (_) =>
                                     _submitting ? null : _submit(),
                               ),
-                              if (_error != null) ...[
-                                const SizedBox(height: AppTokens.space12),
-                                _LoginErrorBanner(error: _error!),
-                              ],
+                              // Keep this slot at a stable height. Inserting
+                              // the error banner into the column used to move
+                              // the submit button on every response, which was
+                              // especially visible on Android during retries.
+                              SizedBox(
+                                height: 88,
+                                child: Align(
+                                  alignment: Alignment.topCenter,
+                                  child: _error == null
+                                      ? const SizedBox.shrink()
+                                      : _LoginErrorBanner(error: _error!),
+                                ),
+                              ),
                               const SizedBox(height: AppTokens.space16),
-                              FilledButton.icon(
-                                onPressed: _submitting ? null : _submit,
-                                icon: _submitting
-                                    ? const SizedBox.square(
-                                        dimension: 16,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Icon(Icons.login_rounded),
-                                label: Text(
-                                  _submitting
-                                      ? (_register
-                                            ? strings.creatingAccount
-                                            : strings.signingIn)
-                                      : (_register
-                                            ? strings.createAccount
-                                            : strings.signIn),
+                              SizedBox(
+                                height: 48,
+                                child: FilledButton.icon(
+                                  onPressed: _submitting ? null : _submit,
+                                  icon: _submitting
+                                      ? const SizedBox.square(
+                                          dimension: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.login_rounded),
+                                  label: Text(
+                                    _submitting
+                                        ? (_register
+                                              ? strings.creatingAccount
+                                              : strings.signingIn)
+                                        : (_register
+                                              ? strings.createAccount
+                                              : strings.signIn),
+                                  ),
                                 ),
                               ),
                               TextButton(
@@ -389,6 +405,8 @@ class _LoginPageState extends State<LoginPage> {
         password: password,
       );
       final settings = widget.settingsStore.settings;
+      final accountEmail = session.user?['email']?.toString().trim();
+      final accountUsername = session.user?['username']?.toString().trim();
       final deviceName = settings.deviceName.trim().isEmpty
           ? await resolveDefaultDeviceName()
           : settings.deviceName.trim();
@@ -396,6 +414,10 @@ class _LoginPageState extends State<LoginPage> {
         settings.copyWith(
           controlServer: session.controlServer,
           authToken: session.token,
+          accountEmail: accountEmail == null || accountEmail.isEmpty
+              ? (email.contains('@') ? email.trim().toLowerCase() : '')
+              : accountEmail.toLowerCase(),
+          accountUsername: accountUsername ?? settings.accountUsername,
           deviceName: deviceName,
           manualMode: false,
         ),
@@ -429,6 +451,8 @@ class _LoginPageState extends State<LoginPage> {
       await widget.settingsStore.updateSettings(
         settings.copyWith(
           authToken: '',
+          accountEmail: '',
+          accountUsername: '',
           manualMode: true,
           deviceName: settings.deviceName.trim().isEmpty
               ? await resolveDefaultDeviceName()

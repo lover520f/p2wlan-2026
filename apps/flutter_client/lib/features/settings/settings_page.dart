@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:p2wlan_flutter_client/shared/widgets/app_notice.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -146,6 +148,24 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(fn);
     _notifyDirty();
     _detailViewNotifier.value += 1;
+  }
+
+  void _rememberAccountProfile(AccountProfile profile) {
+    final email = profile.email.trim();
+    final username = profile.username.trim();
+    final current = widget.settingsStore.settings;
+    if ((email.isEmpty || email.toLowerCase() == current.accountEmail) &&
+        (username.isEmpty || username == current.accountUsername)) {
+      return;
+    }
+    unawaited(
+      widget.settingsStore
+          .updateAccountIdentity(
+            email: email,
+            username: username.isEmpty ? null : username,
+          )
+          .catchError((_) {}),
+    );
   }
 
   @override

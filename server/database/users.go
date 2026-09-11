@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -57,6 +58,55 @@ func (db *DB) GetUserByEmail(email string) (*User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+// GetUserByLoginIdentifier resolves either the account email or its optional
+// display username. Usernames are not unique in legacy databases, so an
+// ambiguous username is rejected rather than selecting an arbitrary account.
+func (db *DB) GetUserByLoginIdentifier(identifier string) (*User, error) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return nil, sql.ErrNoRows
+	}
+	if user, err := db.GetUserByEmail(strings.ToLower(identifier)); err == nil {
+		return user, nil
+	}
+
+	rows, err := db.Query(`
+		SELECT id, email, password_hash, created_at, username
+		FROM users
+		WHERE username = ?
+		LIMIT 2`, identifier)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var match *User
+	count := 0
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(
+			&user.ID,
+			&user.Email,
+			&user.PasswordHash,
+			&user.CreatedAt,
+			&user.Username,
+		); err != nil {
+			return nil, err
+		}
+		count++
+		if count == 1 {
+			match = &user
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if count != 1 {
+		return nil, sql.ErrNoRows
+	}
+	return match, nil
 }
 
 var ErrInvalidUsername = errors.New("username must contain 1–32 characters without control characters")

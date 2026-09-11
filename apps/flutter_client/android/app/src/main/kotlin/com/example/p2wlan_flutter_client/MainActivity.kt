@@ -40,7 +40,33 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         activityIncarnation = nextActivityIncarnation.incrementAndGet()
         super.onCreate(savedInstanceState)
+        applyPreferredRefreshRate()
         lifecycleCoordinator.activityRecreated(activityIncarnation, 0L)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Flutter renders through this Activity window. Prefer the fastest
+        // supported mode up to 120 Hz so capable Android phones get native
+        // high-refresh interaction without forcing 120 Hz on 60/90 Hz panels.
+        applyPreferredRefreshRate()
+    }
+
+    private fun applyPreferredRefreshRate() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        val mode = windowManager.defaultDisplay.supportedModes
+            .filter { it.refreshRate <= 120.5f }
+            .maxByOrNull { it.refreshRate }
+            ?: return
+        val attributes = window.attributes
+        if (attributes.preferredDisplayModeId == mode.modeId &&
+            attributes.preferredRefreshRate == mode.refreshRate
+        ) {
+            return
+        }
+        attributes.preferredDisplayModeId = mode.modeId
+        attributes.preferredRefreshRate = mode.refreshRate
+        window.attributes = attributes
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {

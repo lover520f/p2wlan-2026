@@ -45,9 +45,9 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// Login authenticates a user and returns a JWT token.
-func (s *Service) Login(email, password string) (string, *database.User, error) {
-	user, err := s.db.GetUserByEmail(email)
+// Login authenticates a user by email or display username and returns a JWT token.
+func (s *Service) Login(identifier, password string) (string, *database.User, error) {
+	user, err := s.db.GetUserByLoginIdentifier(identifier)
 	if err != nil {
 		return "", nil, ErrInvalidCredentials
 	}

@@ -89,6 +89,8 @@ class AppSettings {
     this.diagnosticsUrl = defaultDiagnosticsUrl,
     this.controlServer = defaultControlServer,
     this.authToken = '',
+    this.accountEmail = '',
+    this.accountUsername = '',
     this.macosAdminPassword = '',
     this.macosAdminPasswordCiphertext = '',
     this.networkId = defaultNetworkId,
@@ -115,6 +117,12 @@ class AppSettings {
   final String diagnosticsUrl;
   final String controlServer;
   final String authToken;
+
+  /// Non-secret identity metadata for the currently authenticated account.
+  /// The token remains in secure storage; these fields are safe to persist so
+  /// the account page can identify the signed-in user on every platform.
+  final String accountEmail;
+  final String accountUsername;
 
   /// The administrator password is held in memory only while the daemon is
   /// being started. It is never serialized by [toJson].
@@ -157,6 +165,8 @@ class AppSettings {
     String? diagnosticsUrl,
     String? controlServer,
     String? authToken,
+    String? accountEmail,
+    String? accountUsername,
     String? macosAdminPassword,
     String? macosAdminPasswordCiphertext,
     String? networkId,
@@ -183,6 +193,8 @@ class AppSettings {
       diagnosticsUrl: diagnosticsUrl ?? this.diagnosticsUrl,
       controlServer: controlServer ?? this.controlServer,
       authToken: authToken ?? this.authToken,
+      accountEmail: accountEmail ?? this.accountEmail,
+      accountUsername: accountUsername ?? this.accountUsername,
       macosAdminPassword: macosAdminPassword ?? this.macosAdminPassword,
       macosAdminPasswordCiphertext:
           macosAdminPasswordCiphertext ?? this.macosAdminPasswordCiphertext,
@@ -219,6 +231,8 @@ class AppSettings {
       diagnosticsUrl: _string(json['diagnosticsUrl'], defaultDiagnosticsUrl),
       controlServer: _string(json['controlServer'], defaultControlServer),
       authToken: _string(json['authToken']),
+      accountEmail: _string(json['accountEmail']),
+      accountUsername: _string(json['accountUsername']),
       // The plaintext value is deliberately never accepted from JSON. Older
       // builds that wrote it directly are ignored instead of being loaded.
       macosAdminPasswordCiphertext: _string(
@@ -259,6 +273,8 @@ class AppSettings {
     'diagnosticsUrl': diagnosticsUrl,
     'controlServer': controlServer,
     'authToken': authToken,
+    'accountEmail': accountEmail,
+    'accountUsername': accountUsername,
     'macosAdminPasswordCiphertext': macosAdminPasswordCiphertext,
     'networkId': networkId,
     'personalNetworkId': personalNetworkId,

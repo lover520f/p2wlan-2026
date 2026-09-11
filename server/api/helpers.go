@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/yhan-sun/p2wlan/server/database"
 )
 
 // ---- Helpers ----
@@ -36,6 +38,10 @@ func isValidEmail(email string) bool {
 		return false
 	}
 	return true
+}
+
+func isValidLoginIdentifier(identifier string) bool {
+	return isValidEmail(identifier) || database.ValidUsername(identifier)
 }
 
 func isValidPassword(password string) bool {

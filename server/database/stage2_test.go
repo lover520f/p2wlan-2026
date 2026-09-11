@@ -37,6 +37,31 @@ func newUser(t *testing.T, db *DB, email string) *User {
 	return u
 }
 
+func TestUserLoginIdentifierResolvesEmailAndUniqueUsername(t *testing.T) {
+	db, _ := tmpDB(t)
+	first := newUser(t, db, "first@example.test")
+	if _, err := db.UpdateUsername(first.ID, "pyu"); err != nil {
+		t.Fatalf("UpdateUsername: %v", err)
+	}
+
+	byEmail, err := db.GetUserByLoginIdentifier("FIRST@EXAMPLE.TEST")
+	if err != nil || byEmail.ID != first.ID {
+		t.Fatalf("email lookup: user=%+v err=%v", byEmail, err)
+	}
+	byUsername, err := db.GetUserByLoginIdentifier("pyu")
+	if err != nil || byUsername.ID != first.ID {
+		t.Fatalf("username lookup: user=%+v err=%v", byUsername, err)
+	}
+
+	second := newUser(t, db, "second@example.test")
+	if _, err := db.UpdateUsername(second.ID, "pyu"); err != nil {
+		t.Fatalf("UpdateUsername duplicate: %v", err)
+	}
+	if _, err := db.GetUserByLoginIdentifier("pyu"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("ambiguous username should be rejected, got %v", err)
+	}
+}
+
 func newDevice(t *testing.T, db *DB, userID, networkID string) *Device {
 	t.Helper()
 	d, err := db.CreateDevice(userID, networkID, "pk-"+networkID+"-"+userID+"-"+fmt.Sprint(time.Now().UnixNano()), "dev", "linux", "")

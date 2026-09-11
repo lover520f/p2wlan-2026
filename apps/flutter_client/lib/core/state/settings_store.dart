@@ -121,6 +121,30 @@ class SettingsStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Persist the non-secret identity returned by the control server so the
+  /// account page remains useful after a restart and when profile loading is
+  /// temporarily unavailable.
+  Future<void> updateAccountIdentity({
+    required String email,
+    String? username,
+  }) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    final normalizedUsername = username?.trim();
+    if (normalizedEmail.isEmpty &&
+        (normalizedUsername == null || normalizedUsername.isEmpty)) {
+      return;
+    }
+    final nextSettings = _settings.copyWith(
+      accountEmail: normalizedEmail.isEmpty
+          ? _settings.accountEmail
+          : normalizedEmail,
+      accountUsername: normalizedUsername ?? _settings.accountUsername,
+    );
+    // Use the normal queued settings transition so a profile response that
+    // races with logout cannot write identity data back into a new session.
+    await updateSettings(nextSettings);
+  }
+
   Future<void> updateConnectionSettings({
     required String diagnosticsUrl,
     required String controlServer,

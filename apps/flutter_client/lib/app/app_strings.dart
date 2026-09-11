@@ -534,6 +534,10 @@ class AppStrings {
       isZh ? '保存本地设置失败' : 'Failed to save local settings';
 
   String get settingsUsername => isZh ? '用户名' : 'Username';
+  String get settingsAccountEmail => isZh ? '登录邮箱' : 'Login email';
+  String get settingsAccountEmailHelper => isZh
+      ? '用于登录此控制服务器的账号邮箱。'
+      : 'The email address used to sign in to this control server.';
   String get settingsUsernameHint =>
       isZh ? '填写好友认识的名字' : 'A name your friends recognize';
   String get settingsUsernameHelper => isZh
@@ -726,7 +730,9 @@ class AppStrings {
       isZh ? '继续使用手动 / 离线模式' : 'Continue in manual / offline mode';
   String get showPassword => isZh ? '显示密码' : 'Show password';
   String get hidePassword => isZh ? '隐藏密码' : 'Hide password';
-  String get loginErrorEmailRequired => isZh ? '请输入邮箱' : 'Enter your email';
+  String get loginIdentifier => isZh ? '邮箱或用户名' : 'Email or username';
+  String get loginErrorEmailRequired =>
+      isZh ? '请输入邮箱或用户名' : 'Enter your email or username';
   String get loginErrorPasswordTooShort =>
       isZh ? '密码至少需要 6 个字符' : 'Password must be at least 6 characters';
   String get loginErrorInvalidServerTitle =>

@@ -31,6 +31,8 @@ class _AccountSection extends StatelessWidget {
                 )),
                 server: state.widget.settingsStore.settings.controlServer,
                 token: state.widget.settingsStore.settings.authToken,
+                email: state.widget.settingsStore.settings.accountEmail,
+                onProfileLoaded: state._rememberAccountProfile,
               ),
             _PreferenceRow(
               label: strings.credentialSectionTitle,

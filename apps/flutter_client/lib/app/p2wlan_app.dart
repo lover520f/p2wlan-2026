@@ -206,7 +206,12 @@ class _P2WlanAppState extends State<P2WlanApp> with WidgetsBindingObserver {
         (isRoomNetwork(settings.networkId)
                 ? personalNetworkSettings(settings)
                 : settings)
-            .copyWith(authToken: '', manualMode: false),
+            .copyWith(
+              authToken: '',
+              accountEmail: '',
+              accountUsername: '',
+              manualMode: false,
+            ),
       );
     } on AccountSessionChangeException catch (error) {
       if (!mounted) return;

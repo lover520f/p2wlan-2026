@@ -13,18 +13,24 @@ import (
 // Login handles POST /api/v1/login.
 func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email      string `json:"email"`
+		Identifier string `json:"identifier"`
+		Password   string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 		return
 	}
 
-	req.Email = strings.TrimSpace(req.Email)
-	req.Email = strings.ToLower(req.Email)
-	if !isValidEmail(req.Email) {
-		http.Error(w, `{"error":"invalid email"}`, http.StatusBadRequest)
+	identifier := strings.TrimSpace(req.Identifier)
+	if identifier == "" {
+		identifier = strings.TrimSpace(req.Email)
+	}
+	if isValidEmail(identifier) {
+		identifier = strings.ToLower(identifier)
+	}
+	if !isValidLoginIdentifier(identifier) {
+		http.Error(w, `{"error":"invalid email or username"}`, http.StatusBadRequest)
 		return
 	}
 	if !isValidPassword(req.Password) {
@@ -32,7 +38,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, user, err := s.auth.Login(req.Email, req.Password)
+	token, user, err := s.auth.Login(identifier, req.Password)
 	if err != nil {
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return

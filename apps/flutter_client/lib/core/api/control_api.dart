@@ -24,6 +24,13 @@ class AuthSession {
   final Map<String, dynamic>? user;
 }
 
+class AccountProfile {
+  const AccountProfile({required this.email, required this.username});
+
+  final String email;
+  final String username;
+}
+
 class DeviceUpdateResult {
   const DeviceUpdateResult({required this.deviceName, required this.virtualIp});
 
@@ -61,9 +68,9 @@ class ControlApi {
     required String password,
   }) async {
     final normalizedControlServer = _normalizeAuthControlServer(controlServer);
-    final normalizedEmail = email.trim().toLowerCase();
-    if (normalizedEmail.isEmpty) {
-      throw const ControlApiException('请输入邮箱');
+    final normalizedIdentifier = email.trim();
+    if (normalizedIdentifier.isEmpty) {
+      throw const ControlApiException('请输入邮箱或用户名');
     }
     if (password.length < 6) {
       throw const ControlApiException('密码至少需要 6 个字符');
@@ -74,7 +81,12 @@ class ControlApi {
     final body = await _sendJson(
       method: 'POST',
       uri: endpoint,
-      payload: {'email': normalizedEmail, 'password': password},
+      payload: {
+        'email': normalizedIdentifier.contains('@')
+            ? normalizedIdentifier.toLowerCase()
+            : normalizedIdentifier,
+        'password': password,
+      },
     );
     final token = body['token']?.toString() ?? '';
     if (token.isEmpty || body['success'] == false) {
@@ -101,6 +113,26 @@ class ControlApi {
             RegExp(r'[\x00-\x1f\x7f-\x9f]').hasMatch(name))) {
       throw const ControlApiException('用户名需为 1–32 个字符，不能包含控制字符');
     }
+    final profile = await accountProfile(
+      controlServer: controlServer,
+      authToken: authToken,
+      username: username,
+    );
+    return profile.username;
+  }
+
+  Future<AccountProfile> accountProfile({
+    required String controlServer,
+    required String authToken,
+    String? username,
+  }) async {
+    final name = username?.trim();
+    if (name != null &&
+        (name.isEmpty ||
+            name.runes.length > 32 ||
+            RegExp(r'[\x00-\x1f\x7f-\x9f]').hasMatch(name))) {
+      throw const ControlApiException('用户名需为 1–32 个字符，不能包含控制字符');
+    }
     final body = await _sendJson(
       method: name == null ? 'GET' : 'PATCH',
       uri: Uri.parse(
@@ -109,7 +141,13 @@ class ControlApi {
       authToken: authToken,
       payload: name == null ? null : {'username': name},
     );
-    return (body['user'] as Map?)?['username'] as String? ?? '';
+    final user = body['user'] is Map
+        ? Map<String, dynamic>.from(body['user'] as Map)
+        : const <String, dynamic>{};
+    return AccountProfile(
+      email: user['email']?.toString().trim() ?? '',
+      username: user['username']?.toString() ?? '',
+    );
   }
 
   Future<String> renameDevice({
@@ -583,6 +621,9 @@ String _zhAuthError(
   if (statusCode == 409) return '账号已存在';
   if (statusCode == 413) return '日志文件过大，请缩短本次启动时间后再试';
   if (normalized.contains('invalid credentials')) return '邮箱或密码错误';
+  if (normalized.contains('invalid email or username')) {
+    return '邮箱或用户名格式不正确';
+  }
   if (normalized.contains('invalid email')) return '邮箱格式不正确';
   if (normalized.contains('invalid password')) return '密码不符合要求，至少需要 6 个字符';
   if (normalized.contains('registration failed')) return '注册失败，邮箱可能已存在';

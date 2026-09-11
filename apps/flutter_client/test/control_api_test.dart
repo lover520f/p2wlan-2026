@@ -68,6 +68,30 @@ void main() {
     },
   );
 
+  test('account profile exposes the login email alongside username', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final api = ControlApi();
+    addTearDown(api.close);
+    addTearDown(() => server.close(force: true));
+    server.listen((request) async {
+      expect(request.method, 'GET');
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(
+        jsonEncode({
+          'user': {'email': 'pyu@example.test', 'username': 'pyu'},
+        }),
+      );
+      await request.response.close();
+    });
+
+    final profile = await api.accountProfile(
+      controlServer: 'http://127.0.0.1:${server.port}',
+      authToken: 'test-account',
+    );
+    expect(profile.email, 'pyu@example.test');
+    expect(profile.username, 'pyu');
+  });
+
   test('default control server matches the desktop client default', () {
     expect(defaultControlServer, 'http://47.109.40.237:18080');
   });

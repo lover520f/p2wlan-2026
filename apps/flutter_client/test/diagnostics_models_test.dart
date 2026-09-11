@@ -16,6 +16,17 @@ void main() {
     expect(zhSettings.toJson()['languageCode'], 'zh-Hans');
   });
 
+  test('app settings persist the non-secret account identity', () {
+    final settings = const AppSettings(
+      accountEmail: 'pyu@example.test',
+      accountUsername: 'pyu',
+    );
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.accountEmail, 'pyu@example.test');
+    expect(restored.accountUsername, 'pyu');
+    expect(restored.authToken, isEmpty);
+  });
+
   test('parses connected /status fixture', () async {
     final raw = await File('test/fixtures/status_connected.json')
         .readAsString();
