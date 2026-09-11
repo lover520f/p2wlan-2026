@@ -75,31 +75,54 @@ class ControlApi {
     if (password.length < 6) {
       throw const ControlApiException('密码至少需要 6 个字符');
     }
-    final endpoint = Uri.parse(
-      '$normalizedControlServer/api/v1/${mode == AuthMode.register ? 'register' : 'login'}',
-    );
-    final body = await _sendJson(
-      method: 'POST',
-      uri: endpoint,
-      payload: {
-        'identifier': normalizedIdentifier.contains('@')
-            ? normalizedIdentifier.toLowerCase()
-            : normalizedIdentifier,
-        'email': normalizedIdentifier.contains('@')
-            ? normalizedIdentifier.toLowerCase()
-            : normalizedIdentifier,
-        'password': password,
-      },
-    );
-    final token = body['token']?.toString() ?? '';
-    if (token.isEmpty || body['success'] == false) {
-      throw ControlApiException(_zhAuthError(body['error']?.toString()));
+    final endpointPath =
+        '/api/v1/${mode == AuthMode.register ? 'register' : 'login'}';
+    final payload = <String, dynamic>{
+      'identifier': normalizedIdentifier.contains('@')
+          ? normalizedIdentifier.toLowerCase()
+          : normalizedIdentifier,
+      'email': normalizedIdentifier.contains('@')
+          ? normalizedIdentifier.toLowerCase()
+          : normalizedIdentifier,
+      'password': password,
+    };
+    Map<String, dynamic>? body;
+    var usedControlServer = normalizedControlServer;
+    ControlApiException? lastEndpointError;
+    final candidates = _authControlServerCandidates(normalizedControlServer);
+    for (var index = 0; index < candidates.length; index++) {
+      final candidate = candidates[index];
+      try {
+        body = await _sendJson(
+          method: 'POST',
+          uri: Uri.parse('$candidate$endpointPath'),
+          payload: payload,
+        );
+        usedControlServer = candidate;
+        break;
+      } on ControlApiException catch (error) {
+        lastEndpointError = error;
+        if (index == candidates.length - 1 ||
+            !_isRetryableAuthEndpointError(error)) {
+          rethrow;
+        }
+      }
+    }
+    final responseBody = body;
+    if (responseBody == null) {
+      throw lastEndpointError ?? const ControlApiException('控制服务器请求失败');
+    }
+    final token = responseBody['token']?.toString() ?? '';
+    if (token.isEmpty || responseBody['success'] == false) {
+      throw ControlApiException(
+        _zhAuthError(responseBody['error']?.toString()),
+      );
     }
     return AuthSession(
       token: token,
-      controlServer: normalizedControlServer,
-      user: body['user'] is Map
-          ? Map<String, dynamic>.from(body['user'] as Map)
+      controlServer: usedControlServer,
+      user: responseBody['user'] is Map
+          ? Map<String, dynamic>.from(responseBody['user'] as Map)
           : null,
     );
   }
@@ -604,6 +627,35 @@ String _normalizeAuthControlServer(String value) {
   } on FormatException catch (error) {
     throw ControlApiException(error.message);
   }
+}
+
+/// A self-hosted control plane listens on 18080 by default. Older client
+/// builds allowed users to enter only the host, which silently targeted port
+/// 80 and often returned a web page instead of the JSON API. For a bare HTTP
+/// IPv4/IPv6 address, try the control port first while retaining the original
+/// address as a reverse-proxy fallback. Explicit ports and HTTPS URLs are
+/// always respected.
+List<String> _authControlServerCandidates(String normalized) {
+  final uri = Uri.tryParse(normalized);
+  if (uri == null ||
+      uri.scheme != 'http' ||
+      uri.hasPort ||
+      InternetAddress.tryParse(uri.host) == null) {
+    return [normalized];
+  }
+  final controlPort = uri.replace(port: 18080).toString();
+  return controlPort == normalized ? [normalized] : [controlPort, normalized];
+}
+
+bool _isRetryableAuthEndpointError(ControlApiException error) {
+  final message = error.message;
+  return message.startsWith('无法连接控制服务器') ||
+      message.startsWith('无法解析控制服务器域名') ||
+      message.startsWith('Windows 无法建立到控制服务器的连接') ||
+      message.startsWith('控制服务器网络请求失败') ||
+      message.startsWith('控制服务器 TLS 握手失败') ||
+      message.startsWith('连接控制服务器超时') ||
+      message.startsWith('控制服务器返回了无法解析的数据');
 }
 
 class ControlApiException implements Exception {

@@ -34,4 +34,41 @@ void main() {
     await tester.pump(const Duration(seconds: 4));
     expect(find.text('Saved'), findsNothing);
   });
+
+  testWidgets('notice content keeps its intrinsic height', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showAppNotice(
+                context,
+                content: DecoratedBox(
+                  decoration: const BoxDecoration(color: Colors.red),
+                  // Deliberately leave the Column at its default max size to
+                  // ensure the notice constrains arbitrary caller content.
+                  child: Column(
+                    children: [const Text('无法登录'), const Text('控制服务器返回了错误')],
+                  ),
+                ),
+              ),
+              child: const Text('Show'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Show'));
+    await tester.pumpAndSettle();
+
+    final banner = find
+        .ancestor(
+          of: find.text('控制服务器返回了错误'),
+          matching: find.byType(DecoratedBox),
+        )
+        .last;
+    expect(tester.getRect(banner).height, lessThan(120));
+  });
 }
