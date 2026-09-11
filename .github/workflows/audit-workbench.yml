@@ -3,42 +3,131 @@ name: Audit workbench
 on:
   push:
     branches: [fix/relay-auth-rooms-ux-audit]
-    paths: [.github/workflows/audit-workbench.yml, .audit-workbench/**]
+    paths: [.audit-workbench/execute]
 
 permissions:
   contents: read
 
 concurrency:
   group: audit-workbench-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  source:
+  verify:
     if: github.repository == 'yhan-sun/p2wlan' && github.ref == 'refs/heads/fix/relay-auth-rooms-ux-audit'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          persist-credentials: false
-      - name: Archive exact tracked source
-        run: git archive --format=tar.gz HEAD -o "${RUNNER_TEMP}/p2wlan-audit-source.tar.gz"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: p2wlan-audit-source-${{ github.sha }}
-          path: ${{ runner.temp }}/p2wlan-audit-source.tar.gz
-          retention-days: 1
+          fetch-depth: 0
+      - name: Apply and verify exact source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor d056fc282d482afe040f6152fc24e6d967fd032f HEAD
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess
+          patches = sorted(pathlib.Path('.audit-workbench').glob('patch-*.diff'))
+          if len(patches) != 10:
+              raise SystemExit('expected all ten source patch parts')
+          expected = {}
+          for patch in patches:
+              text = patch.read_text()
+              for block in re.split(r'(?=^diff --git )', text, flags=re.M):
+                  if not block.strip():
+                      continue
+                  path = re.search(r'^\+\+\+ b/(.+)$', block, flags=re.M).group(1)
+                  if not path.startswith(('server/', 'apps/flutter_client/', 'client/cli/')):
+                      raise SystemExit('unexpected patch target: ' + path)
+                  digest = re.search(r'^index [0-9a-f]+\.\.([0-9a-f]+)', block, flags=re.M).group(1)
+                  expected[path] = digest
+              subprocess.run(['git', 'apply', '--check', str(patch)], check=True)
+              subprocess.run(['git', 'apply', str(patch)], check=True)
+          for path, digest in expected.items():
+              actual = subprocess.check_output(['git', 'hash-object', path], text=True).strip()
+              if not actual.startswith(digest):
+                  raise SystemExit('source transfer mismatch: ' + path + ' expected=' + digest + ' actual=' + actual)
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'audit-paths.json').write_text(json.dumps(sorted(expected)))
+          subprocess.run(['git', 'add', '-N', '--', *expected], check=True)
+          PY
+          mv .audit-workbench "$RUNNER_TEMP/audit-workbench-input"
+          mv .github/workflows/audit-workbench.yml "$RUNNER_TEMP/audit-workbench.yml"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
-      - name: Archive pinned development dependencies
+      - name: Go formatting, vet and race regressions
         working-directory: server
+        shell: bash
         run: |
-          go mod vendor
-          tar -czf "${RUNNER_TEMP}/p2wlan-audit-go-vendor.tar.gz" vendor
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          set -euo pipefail
+          gofmt -w api/*.go database/*.go relay/*.go
+          go vet ./... 2>&1 | tee "$RUNNER_TEMP/audit-go-vet.log"
+          go test -race ./... -count=1 2>&1 | tee "$RUNNER_TEMP/audit-go-race.log"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          name: p2wlan-audit-go-vendor-${{ github.sha }}
-          path: ${{ runner.temp }}/p2wlan-audit-go-vendor.tar.gz
-          retention-days: 1
+          channel: stable
+          flutter-version-file: .fvmrc
+          cache: true
+      - name: Flutter format, analyze and all tests
+        working-directory: apps/flutter_client
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+          git diff --exit-code -- pubspec.lock
+          dart format lib/core/rooms lib/features/rooms/rooms_page.dart test/parallel_rooms_test.dart test/room_api_test.dart test/room_connectivity_test.dart test/room_device_controls_test.dart test/rooms_page_test.dart
+          flutter analyze 2>&1 | tee "$RUNNER_TEMP/audit-flutter-analyze.log"
+          flutter test --reporter expanded 2>&1 | tee "$RUNNER_TEMP/audit-flutter-tests.log"
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          components: rustfmt
+      - name: Rust formatting and CLI room tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo test -p p2wlan-cli room_tests -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/audit-cli-tests.log"
+      - name: Existing repository security policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/security/tests -p 'test_*.py' 2>&1 | tee "$RUNNER_TEMP/audit-security-tests.log"
+          python3 scripts/security/workflow_permissions.py --root . > "$RUNNER_TEMP/audit-workflow-policy.log"
+          python3 scripts/security/credential_scan.py --root . > "$RUNNER_TEMP/audit-credential-policy.log"
+          python3 scripts/security/flutter_lock_policy.py --lockfile apps/flutter_client/pubspec.lock > "$RUNNER_TEMP/audit-lock-policy.log"
+          git diff --check
+      - name: Capture tested source and logs
+        if: always()
+        shell: bash
+        run: |
+          git diff --binary -- apps/ client/ server/ docs/ > "$RUNNER_TEMP/audit-reviewed.patch"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: p2wlan-audit-validation-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/audit-*.log
+            ${{ runner.temp }}/audit-reviewed.patch
+          retention-days: 3
+      - name: Commit only tested source to the audit branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv "$RUNNER_TEMP/audit-workbench-input" .audit-workbench
+          mv "$RUNNER_TEMP/audit-workbench.yml" .github/workflows/audit-workbench.yml
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          expected = set(json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'audit-paths.json').read_text()))
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          if not changed.issubset(expected):
+              raise SystemExit('unexpected changes outside source patch: ' + repr(sorted(changed - expected)))
+          subprocess.run(['git', 'add', '--', *sorted(expected)], check=True)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat:修复中继授权撤权同步与房间连接体验'
+          git push origin HEAD:refs/heads/fix/relay-auth-rooms-ux-audit
