@@ -57,11 +57,11 @@ Options:
 Examples:
   # SSH key authentication:
   ./scripts/deploy-server.sh --host 47.109.40.237 --user deploy \
-    --identity ~/.ssh/id_ed25519 --version server-v0.1.160 --start
+    --identity ~/.ssh/id_ed25519 --version server-v0.1.161 --start
 
   # Password authentication: ssh and sudo will prompt in the terminal.
   ./scripts/deploy-server.sh --host example.com --user ubuntu \
-    --version server-v0.1.160 --start
+    --version server-v0.1.161 --start
 
   # Upload an archive downloaded from an Actions artifact:
   ./scripts/deploy-server.sh --host example.com --user ubuntu \
@@ -69,7 +69,7 @@ Examples:
 
   # Let an already installed server pull the release itself:
   ./scripts/deploy-server.sh --mode fetch --host example.com --user ubuntu \
-    --version server-v0.1.160 --start
+    --version server-v0.1.161 --start
 EOF
 }
 
