@@ -338,9 +338,24 @@ function Stop-CliDaemon {
         [Parameter(Mandatory = $true)][string]$ConfigPath,
         [Parameter(Mandatory = $true)][string]$StateDirectory
     )
+    # The CLI hashes state directories for custom config paths. The daemon
+    # acceptance profile deliberately keeps its auth token beside the config
+    # in the cycle directory, so make this temporary config the CLI's
+    # configured default while issuing `down`; this exercises the same token
+    # and diagnostics endpoint that the daemon just published.
+    $previousConfig = $env:P2WLAN_CONFIG
     $env:P2WLAN_STATE_DIR = $StateDirectory
-    $output = @(& $CliPath --config $ConfigPath down 2>&1 | Out-String)
-    $exitCode = $LASTEXITCODE
+    $env:P2WLAN_CONFIG = $ConfigPath
+    try {
+        $output = @(& $CliPath --config $ConfigPath down 2>&1 | Out-String)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        if ($null -eq $previousConfig) {
+            Remove-Item Env:P2WLAN_CONFIG -ErrorAction SilentlyContinue
+        } else {
+            $env:P2WLAN_CONFIG = $previousConfig
+        }
+    }
     if ($exitCode -ne 0) {
         throw "p2wlan CLI stop exited with ${exitCode}: $($output -join '')"
     }
