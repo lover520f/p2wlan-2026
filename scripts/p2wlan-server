@@ -182,11 +182,12 @@ init_server() {
   local role=${1:-all}
   need_root
   case "$role" in control|relay|all) ;; *) die "role must be control, relay, or all" ;; esac
-  install -d -m 0750 "$ROOT_DIR" "$RELEASE_DIR" "$CONFIG_DIR" "$DATA_DIR"
+  # The systemd units run as the unprivileged p2wlan user.  Keep the
+  # installation root traversable while protecting configuration and data.
+  install -d -m 0755 "$ROOT_DIR" "$RELEASE_DIR" "$CONFIG_DIR" "$DATA_DIR"
   if ! id p2wlan >/dev/null 2>&1; then
     useradd --system --home-dir "$DATA_DIR" --no-create-home --shell /usr/sbin/nologin p2wlan
   fi
-  chown -R p2wlan:p2wlan "$CONFIG_DIR" "$DATA_DIR"
   if [ ! -f "$CONFIG_DIR/control.env" ]; then
     install -m 0600 /dev/null "$CONFIG_DIR/control.env"
     printf '%s\n' "PORT=18080" "DB_PATH=$DATA_DIR/p2pnet.db" "JWT_SECRET=$(openssl rand -hex 32)" >> "$CONFIG_DIR/control.env"
@@ -195,6 +196,9 @@ init_server() {
     install -m 0600 /dev/null "$CONFIG_DIR/relay.env"
     printf '%s\n' "RELAY_BIND=:18081" "RELAY_REQUIRE_AUTH=true" >> "$CONFIG_DIR/relay.env"
   fi
+  # Files created above inherit root ownership.  Transfer only the runtime
+  # config/data trees to the service account; release binaries stay root-owned.
+  chown -R p2wlan:p2wlan "$CONFIG_DIR" "$DATA_DIR"
   case "$role" in
     control) install_unit p2wlan-control.service p2wlan-control "$CONFIG_DIR/control.env" ;;
     relay) install_unit p2wlan-relay.service p2wlan-relay "$CONFIG_DIR/relay.env" ;;

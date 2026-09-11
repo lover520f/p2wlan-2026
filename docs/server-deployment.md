@@ -47,7 +47,7 @@ find . -name 'p2wlan-server-linux-amd64.tar.gz' -print
 ./scripts/deploy-server.sh \
   --host 47.109.40.237 \
   --user deploy \
-  --version server-v0.1.161 \
+  --version server-v0.1.162 \
   --identity "$HOME/.ssh/ali.pem" \
   --start
 ```
@@ -66,14 +66,14 @@ find . -name 'p2wlan-server-linux-amd64.tar.gz' -print
 
 ```bash
 ./scripts/deploy-server.sh --host server.example.com --user ubuntu \
-  --version server-v0.1.161 --start
+  --version server-v0.1.162 --start
 ```
 
 脚本会依次执行 SSH 连接、远端临时目录创建、归档校验、安装/更新、版本校验、systemd 启动和 `/health` 检查。首次安装前需要先把 `control.env`、`relay.env`、DNS、TLS 和 Relay catalog 配置好；如果只想安装而暂不启动，去掉 `--start`，脚本会明确报告健康检查已跳过。可先用 `--dry-run` 查看计划，不会连接或写远端：
 
 ```bash
 ./scripts/deploy-server.sh --host server.example.com --user ubuntu \
-  --version server-v0.1.161 --dry-run
+  --version server-v0.1.162 --dry-run
 ```
 
 ## 让服务器自行拉取
@@ -83,13 +83,13 @@ find . -name 'p2wlan-server-linux-amd64.tar.gz' -print
 ```bash
 ./scripts/deploy-server.sh --mode fetch \
   --host 47.109.40.237 --user deploy \
-  --version server-v0.1.161 --start
+  --version server-v0.1.162 --start
 ```
 
 等价的远端命令如下，适合已经 SSH 登录服务器的用户：
 
 ```bash
-sudo p2wlan-server update --version server-v0.1.161
+sudo p2wlan-server update --version server-v0.1.162
 sudo p2wlan-server verify --service all
 sudo p2wlan-server start --service all
 sudo p2wlan-server check --service all
