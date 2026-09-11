@@ -1,0 +1,257 @@
+diff --git a/apps/flutter_client/lib/core/rooms/desktop_room_runtime.dart b/apps/flutter_client/lib/core/rooms/desktop_room_runtime.dart
+index dae4a34..3fe28da 100644
+--- a/apps/flutter_client/lib/core/rooms/desktop_room_runtime.dart
++++ b/apps/flutter_client/lib/core/rooms/desktop_room_runtime.dart
+@@ -5,7 +5,7 @@ import '../models/diagnostics_models.dart';
+ import 'parallel_rooms.dart';
+ import 'room_api.dart';
+ 
+-class DesktopRoomRuntime implements RoomRuntime {
++class DesktopRoomRuntime implements RoomRuntime, RoomControlStatus {
+   DesktopRoomRuntime(
+     this.plan, {
+     DiagnosticsApi? diagnosticsApi,
+@@ -99,6 +99,9 @@ class DesktopRoomRuntime implements RoomRuntime {
+   }
+ 
+   DateTime? _lastAccessCheck;
++  String? _controlWarning;
++  @override
++  String? get controlWarning => _controlWarning;
+ 
+   Future<void> _requestAccess({required bool resume}) async {
+     if (!plan.room.deviceControls) return;
+@@ -143,15 +146,19 @@ class DesktopRoomRuntime implements RoomRuntime {
+         now.difference(_lastAccessCheck!) < const Duration(seconds: 2)) {
+       return;
+     }
+-    final identity = await _daemon.roomDeviceIdentity(plan.settings);
+-    if (identity == null) return;
+-    final api =
+-        controlApiFactory?.call() ??
+-        RoomApi(
+-          server: plan.settings.controlServer,
+-          token: plan.settings.authToken,
+-        );
++    _lastAccessCheck = now;
++    RoomApi? api;
+     try {
++      final identity = await _daemon.roomDeviceIdentity(plan.settings);
++      if (identity == null) {
++        _controlWarning = '无法读取本机设备身份；房间访问仍由本地服务校验。';
++        return;
++      }
++      api = controlApiFactory?.call() ?? RoomApi(
++        server: plan.settings.controlServer,
++        token: plan.settings.authToken,
++        requestTimeout: const Duration(seconds: 2),
++      );
+       final roster = await api.roster(plan.room.id);
+       for (final access in roster.deviceAccess) {
+         if (access['public_key'] != identity['public_key']) continue;
+@@ -163,14 +170,20 @@ class DesktopRoomRuntime implements RoomRuntime {
+           });
+         }
+       }
+-      _lastAccessCheck = now;
++      _controlWarning = null;
++    } on RoomConnectionStopped {
++      rethrow;
+     } on RoomException catch (error) {
+       if (error.code == 'room_access') {
+         throw const RoomConnectionStopped('该账号已退出或被移出房间，本机连接已停止');
+       }
+-      rethrow;
++      _controlWarning = error.code == 'auth_expired'
++          ? '登录已过期，暂时无法管理房间，请重新登录。'
++          : '暂时无法从控制服务器同步房间权限；本地连接状态独立检查，授权过期后会暂停通信。';
++    } catch (_) {
++      _controlWarning = '暂时无法从控制服务器同步房间权限；本地连接状态独立检查，授权过期后会暂停通信。';
+     } finally {
+-      api.close();
++      api?.close();
+     }
+   }
+ 
+ diff --git a/apps/flutter_client/lib/core/rooms/parallel_rooms.dart b/apps/flutter_client/lib/core/rooms/parallel_rooms.dart
+index fc3dadb..f3f41e5 100644
+--- a/apps/flutter_client/lib/core/rooms/parallel_rooms.dart
++++ b/apps/flutter_client/lib/core/rooms/parallel_rooms.dart
+@@ -14,11 +14,12 @@ import 'room_connection_preferences.dart';
+ enum RoomConnectionPhase { starting, running, unavailable, stopping, failed }
+ 
+ class ParallelRoomPlan {
+-  ParallelRoomPlan(AppSettings account, this.room, {this.automatic = false}) {
++  ParallelRoomPlan(AppSettings account, this.room, {this.automatic = false, int? diagnosticsPort}) {
+     final selected = selectRoomSettings(account, room);
+     profileId = roomProfileId(selected);
+-    final port =
+-        40000 + int.parse(profileId.substring(0, 8), radix: 16) % 20000;
++    final port = diagnosticsPort ??
++        (40000 + int.parse(profileId.substring(0, 8), radix: 16) % 20000);
++    if (port < 40000 || port >= 60000) throw ArgumentError.value(port, 'diagnosticsPort');
+     settings = selected.copyWith(
+       diagnosticsUrl: 'http://127.0.0.1:$port/status',
+       tunInterface: 'p2r${profileId.substring(0, 12)}',
+@@ -41,6 +42,10 @@ abstract interface class RoomRuntime {
+   void close();
+ }
+ 
++abstract interface class RoomControlStatus {
++  String? get controlWarning;
++}
++
+ class ParallelRoomSession {
+   ParallelRoomSession(this.plan, this.runtime);
+   final ParallelRoomPlan plan;
+@@ -324,6 +329,11 @@ class ParallelRooms extends ChangeNotifier {
+     bool automatic,
+   ) async {
+     if (!_accepts(epoch, credentials)) return _fail('登录状态已变化，已取消连接');
++    var account = readSettings();
++    final initialPlan = ParallelRoomPlan(account, room, automatic: automatic);
++    final preference = await preferences.read(initialPlan.profileId);
++    if (!_accepts(epoch, credentials)) return _fail('登录状态已变化，已取消连接');
++    account = readSettings();
+     if (_sessions.values.any(
+       (entry) => _credentialKey(entry.plan.settings) != credentials,
+     )) {
+@@ -337,8 +347,12 @@ class ParallelRooms extends ChangeNotifier {
+     if (_sessions.length >= maxConnections) {
+       return _fail('已达到并行房间上限 $maxConnections');
+     }
+-    final account = readSettings();
+-    final plan = ParallelRoomPlan(account, room, automatic: automatic);
++    var plan = ParallelRoomPlan(account, room, automatic: automatic, diagnosticsPort: preference.diagnosticsPort);
++    final firstPort = Uri.parse(plan.settings.diagnosticsUrl).port;
++    for (var attempt = 0; _portConflict(plan, account) && attempt < 32; attempt++) {
++      plan = ParallelRoomPlan(account, room, automatic: automatic,
++          diagnosticsPort: 40000 + (firstPort - 40000 + attempt + 1) % 20000);
++    }
+     final conflict = _conflict(plan, account);
+     if (conflict != null) return _fail(conflict);
+     final entry = ParallelRoomSession(plan, runtimeFactory(plan));
+@@ -352,7 +366,9 @@ class ParallelRooms extends ChangeNotifier {
+     _notify();
+     DaemonCommandResult started;
+     try {
+-      if (!automatic) await preferences.update(plan.profileId, wanted: true);
++      await preferences.update(plan.profileId,
++          wanted: automatic ? null : true,
++          diagnosticsPort: Uri.parse(plan.settings.diagnosticsUrl).port);
+       started = _accepts(epoch, credentials)
+           ? await entry.runtime.start()
+           : _fail('登录状态已变化，连接已取消');
+@@ -393,6 +409,12 @@ class ParallelRooms extends ChangeNotifier {
+     return started;
+   }
+ 
++  bool _portConflict(ParallelRoomPlan plan, AppSettings account) {
++    final port = Uri.parse(plan.settings.diagnosticsUrl).port;
++    return Uri.tryParse(account.diagnosticsUrl)?.port == port ||
++        _sessions.values.any((entry) => Uri.parse(entry.plan.settings.diagnosticsUrl).port == port);
++  }
++
+   String? _conflict(ParallelRoomPlan plan, AppSettings account) {
+     if (account.networkId == plan.room.id) return '此房间仍被主网络使用，请先切回个人网络';
+     if (Uri.tryParse(account.diagnosticsUrl)?.port ==
+@@ -539,15 +561,22 @@ class ParallelRooms extends ChangeNotifier {
+         !_recovering.add(room.id)) {
+       return;
+     }
++    final epoch = _epoch;
+     try {
+       await _enqueue(room.id, () async {
+-        if (_sessions.containsKey(room.id) ||
++        if (epoch != _epoch || _sessions.containsKey(room.id) ||
+             _stoppingAll != null ||
+             connectionsPaused) {
+           return _ok();
+         }
+         final account = readSettings();
+-        final plan = ParallelRoomPlan(account, room);
++        final initial = ParallelRoomPlan(account, room);
++        final preference = await preferences.read(initial.profileId);
++        if (_credentialKey(account) != _credentialKey(readSettings()) ||
++            _stoppingAll != null || connectionsPaused || _disposed || epoch != _epoch || _sessions.containsKey(room.id)) {
++          return _ok();
++        }
++        final plan = ParallelRoomPlan(account, room, diagnosticsPort: preference.diagnosticsPort);
+         if (_conflict(plan, account) != null ||
+             _sessions.length >= maxConnections) {
+           return _ok();
+@@ -617,12 +646,14 @@ class ParallelRooms extends ChangeNotifier {
+       }
+       entry.snapshot = snapshot;
+       entry.phase = RoomConnectionPhase.running;
+-      entry.message = null;
++      final runtime = entry.runtime;
++      entry.message = runtime is RoomControlStatus ? runtime.controlWarning : null;
+       _rememberRoom(
+         entry.plan,
+         snapshot: snapshot,
+         replaceSnapshot: true,
+         phase: entry.phase,
++        message: entry.message,
+       );
+     } catch (error) {
+       if (error is RoomConnectionStopped &&
+diff --git a/apps/flutter_client/lib/core/rooms/room_api.dart b/apps/flutter_client/lib/core/rooms/room_api.dart
+index 519a0a9..204a2b9 100644
+--- a/apps/flutter_client/lib/core/rooms/room_api.dart
++++ b/apps/flutter_client/lib/core/rooms/room_api.dart
+@@ -190,7 +190,7 @@ List<Map<String, dynamic>> _objects(Object? value) =>
+     (value as List? ?? const []).map(_object).toList(growable: false);
+ 
+ class RoomApi {
+-  RoomApi({required String server, required this.token, HttpClient? client})
++  RoomApi({required String server, required this.token, HttpClient? client, this.requestTimeout = const Duration(seconds: 12)})
+     : server = roomControlServer(server),
+       _client = client ?? HttpClient() {
+     _client.connectionTimeout = const Duration(seconds: 8);
+@@ -198,6 +198,7 @@ class RoomApi {
+   final String server;
+   final String token;
+   final HttpClient _client;
++  final Duration requestTimeout;
+   String userId = '';
+ 
+   Future<Map<String, dynamic>> request(
+@@ -208,7 +209,7 @@ class RoomApi {
+     if (token.trim().isEmpty) throw const RoomException('请先登录');
+     HttpClientRequest? active;
+     var expired = false;
+-    final timer = Timer(const Duration(seconds: 12), () {
++    final timer = Timer(requestTimeout, () {
+       expired = true;
+       active?.abort(const RoomException('房间服务请求超时，请刷新后确认操作结果'));
+     });
+@@ -219,7 +220,7 @@ class RoomApi {
+           request.abort();
+           throw TimeoutException('room request expired');
+         }
+-      }).timeout(const Duration(seconds: 12));
++      }).timeout(requestTimeout);
+     } on RoomException {
+       rethrow;
+     } on TimeoutException {
+@@ -274,14 +275,17 @@ class RoomApi {
+         'room_join' => '无法加入：房间号、密码或邀请无效，房间已锁定，或账号已被封禁',
+         'room_access' => '无权操作该房间，或你已不再是成员',
+         'room_invalid' => '输入无效，请检查名称、密码、IP 或邀请设置',
+-        'room_conflict' => '该 IP 已被占用，请选择其他地址',
++        'room_ip_conflict' => '该 IP 无法分配，请检查网段或选择未占用的地址',
++        'room_device_state_conflict' => '此设备状态已变化，申请可能已被处理，请查看最新状态',
++        'room_invite_limit' => '有效邀请已达上限，请先撤销不再使用的邀请',
++        'room_conflict' => '操作与当前房间状态冲突，请刷新后重试',
+         'room_exhausted' => '服务器没有可用子网或房间 IP，请联系管理员',
+         'room_rate_limit' => '加入尝试过于频繁，请一分钟后重试',
+         _ when response.statusCode == 401 => '登录状态已失效，请重新登录',
+         _ when response.statusCode == 404 || response.statusCode == 426 =>
+           '当前服务器不支持好友房间，请升级服务器',
+         _ => '房间操作失败，请刷新后确认状态',
+-      }, code: json['error_code'] as String?);
++      }, code: json['error_code'] as String? ?? (response.statusCode == 401 ? 'auth_expired' : null));
+     }
+     return json;
+   }
